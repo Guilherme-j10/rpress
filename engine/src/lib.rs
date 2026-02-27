@@ -7,11 +7,16 @@ pub struct Route {
 }
 
 #[derive(Debug)]
-pub struct Request {
+pub struct RequestMetadata {
     pub method: String,
     pub uri: String,
     pub http_method: String,
     pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub struct Request {
+    pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
 }
 
@@ -30,12 +35,16 @@ impl Rpress {
         }
     }
 
-    pub fn parse_http_protocol(&self, buffer: &[u8]) -> Result<Option<Request>, &'static str> {
+    pub fn parse_http_protocol(
+        &self,
+        buffer: &[u8],
+        is_chunk: bool,
+    ) -> Result<Option<(Request, usize)>, &'static str> {
         let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
         let rq_bytes = if let Some(val) = rq_line {
             val
         } else {
-            return Err("Invalid request line");
+            return Err("Request line not found");
         };
 
         let mut request_line = buffer[..rq_bytes]
@@ -48,7 +57,7 @@ impl Rpress {
             .collect::<Vec<String>>();
 
         if request_line_content.len() < 3 {
-            return Err("Invalid request line");
+            return Err("Invalid request line size");
         }
 
         let h_lines = buffer.windows(4).position(|b| b == b"\r\n\r\n");
@@ -81,17 +90,21 @@ impl Rpress {
         let body_end = body_start + content_lenght;
 
         if buffer.len() < body_end {
-            // the request body is incomplete
             return Ok(None);
         }
 
-        Ok(Some(Request {
-            uri: request_line_content.get(1).unwrap().to_owned(),
-            method: request_line_content.get(0).unwrap().to_owned(),
-            http_method: request_line_content.get(2).unwrap().to_owned(),
-            headers: header_map,
-            payload: buffer[body_start..body_end].to_vec(),
-        }))
+        Ok(Some((
+            Request {
+                request_metadata: Some(RequestMetadata {
+                    uri: request_line_content.get(1).unwrap().to_owned(),
+                    method: request_line_content.get(0).unwrap().to_owned(),
+                    http_method: request_line_content.get(2).unwrap().to_owned(),
+                    headers: header_map,
+                }),
+                payload: buffer[body_start..body_end].to_vec(),
+            },
+            body_end,
+        )))
     }
 
     pub async fn server<T: Into<String>>(self: Arc<Self>, listener: T) -> anyhow::Result<()> {
@@ -104,26 +117,56 @@ impl Rpress {
                 let thread_self = self.clone();
 
                 async move {
+                    let max_capacity = 40096;
                     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
                     let mut temp_buffer = [0; 1024];
 
+                    let chunk_header = b"Transfer-Encoding: chunked";
+                    let mut is_chunked = false;
+
                     loop {
-                        let n = socket.read(&mut temp_buffer).await.unwrap();
-                        if n == 0 {
-                            break;
+                        loop {
+                            if buffer.len() == 0 {
+                                break;
+                            }
+
+                            if let Some(_) = buffer
+                                .windows(chunk_header.len())
+                                .position(|b| b == chunk_header)
+                            {
+                                is_chunked = true;
+                            }
+
+                            match thread_self.parse_http_protocol(&buffer, is_chunked) {
+                                Ok(Some((request, consumed))) => {
+                                    dbg!("{:?}", request);
+                                    buffer.drain(..consumed);
+                                }
+                                Ok(None) => {
+                                    println!("[POSSIBLE_MTU]: Incomplete message");
+                                    break;
+                                }
+                                Err(err) => {
+                                    println!("Error: {}", err);
+                                    break;
+                                }
+                            }
                         }
+
+                        let n = match socket.read(&mut temp_buffer).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(e) => {
+                                println!("Error in read socket: {}", e);
+                                break;
+                            }
+                        };
 
                         buffer.extend_from_slice(&temp_buffer[..n]);
 
-                        match thread_self.parse_http_protocol(&buffer) {
-                            Ok(parsed_message) => {
-                                if let Some(request) = parsed_message {
-                                    dbg!("{:?}", request);
-                                } else {
-                                    println!("Incomplete request waiting for the end")
-                                }
-                            }
-                            Err(err) => println!("Error in parsing http content: {}", err),
+                        if buffer.len() > max_capacity {
+                            println!("Buffer capacity overflowed");
+                            break;
                         }
                     }
                 }
