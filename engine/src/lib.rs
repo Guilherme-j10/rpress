@@ -40,70 +40,100 @@ impl Rpress {
         buffer: &[u8],
         is_chunk: bool,
     ) -> Result<Option<(Request, usize)>, &'static str> {
+        let mut parse_only_chunk = false;
         let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
-        let rq_bytes = if let Some(val) = rq_line {
-            val
-        } else {
-            return Err("Request line not found");
-        };
 
-        let mut request_line = buffer[..rq_bytes]
-            .split(|&b| [b] == *b" ")
-            .collect::<Vec<&[u8]>>();
-
-        let request_line_content = request_line
-            .iter_mut()
-            .map(|v| String::from_utf8_lossy(v).into_owned())
-            .collect::<Vec<String>>();
-
-        if request_line_content.len() < 3 {
-            return Err("Invalid request line size");
+        if rq_line.is_some() && rq_line.unwrap() < 3 {
+            if is_chunk {
+                parse_only_chunk = true;
+            } else {
+                return Err("Request line possibly malformed");
+            }
         }
 
-        let h_lines = buffer.windows(4).position(|b| b == b"\r\n\r\n");
-        let h_bytes = if let Some(val) = h_lines {
-            val
-        } else {
-            return Err("Invalid headers");
-        };
+        let mut request_metadata: Option<RequestMetadata> = None;
+        let mut payload = vec![];
+        let mut total_consumed = 0;
 
-        let header_lines = &buffer[rq_bytes + 2..h_bytes];
-        let headers_str = String::from_utf8_lossy(header_lines).to_owned();
-        let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
-        let mut content_lenght = 0;
+        if parse_only_chunk == false && is_chunk || parse_only_chunk == false && is_chunk == false {
+            let rq_bytes = if let Some(request_bytes) = rq_line {
+                request_bytes
+            } else {
+                return Err("Request line not found");
+            };
 
-        let mut header_map: HashMap<String, String> = HashMap::new();
-        for header in headers {
-            let data = header.split(": ").collect::<Vec<_>>();
+            let mut request_line = buffer[..rq_bytes]
+                .split(|&b| [b] == *b" ")
+                .collect::<Vec<&[u8]>>();
 
-            let index = data.get(0).unwrap().to_string();
-            let value = data.get(1).unwrap().to_string();
+            let request_line_content = request_line
+                .iter_mut()
+                .map(|v| String::from_utf8_lossy(v).into_owned())
+                .collect::<Vec<String>>();
 
-            if index == "Content-Length" {
-                content_lenght = value.parse().unwrap();
+            if request_line_content.len() < 3 {
+                return Err("Invalid request line size");
             }
 
-            header_map.insert(index, value);
-        }
+            let h_lines = buffer.windows(4).position(|b| b == b"\r\n\r\n");
+            let h_bytes = if let Some(val) = h_lines {
+                val
+            } else {
+                return Err("Invalid headers");
+            };
 
-        let body_start = h_bytes + 4;
-        let body_end = body_start + content_lenght;
+            let header_lines = &buffer[rq_bytes + 2..h_bytes];
+            let headers_str = String::from_utf8_lossy(header_lines).to_owned();
+            let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
+            let mut content_lenght = 0;
 
-        if buffer.len() < body_end {
-            return Ok(None);
+            let mut header_map: HashMap<String, String> = HashMap::new();
+            for header in headers {
+                let data = header.split(": ").collect::<Vec<_>>();
+
+                let index = data.get(0).unwrap().to_string();
+                let value = data.get(1).unwrap().to_string();
+
+                if index == "Content-Length" {
+                    content_lenght = value.parse().unwrap();
+                }
+
+                header_map.insert(index, value);
+            }
+
+            let body_start = h_bytes + 4;
+            let body_end = body_start + content_lenght;
+
+            if buffer.len() < body_end {
+                return Ok(None);
+            }
+
+            request_metadata = Some(RequestMetadata {
+                uri: request_line_content.get(1).unwrap().to_owned(),
+                method: request_line_content.get(0).unwrap().to_owned(),
+                http_method: request_line_content.get(2).unwrap().to_owned(),
+                headers: header_map,
+            });
+            payload = buffer[body_start..body_end].to_vec();
+            total_consumed = body_end;
+        } else {
+            // payload example:
+            // | 11
+            // | {
+            // | 	"data": "oi"
+            // | }
+            // | 0
+            // we must implementate a machanism of security to prevent huge payload on memory
+
+            println!("Parse the rest of the message");
         }
 
         Ok(Some((
             Request {
-                request_metadata: Some(RequestMetadata {
-                    uri: request_line_content.get(1).unwrap().to_owned(),
-                    method: request_line_content.get(0).unwrap().to_owned(),
-                    http_method: request_line_content.get(2).unwrap().to_owned(),
-                    headers: header_map,
-                }),
-                payload: buffer[body_start..body_end].to_vec(),
+                request_metadata,
+                payload,
             },
-            body_end,
+            total_consumed,
         )))
     }
 
@@ -130,11 +160,13 @@ impl Rpress {
                                 break;
                             }
 
-                            if let Some(_) = buffer
-                                .windows(chunk_header.len())
-                                .position(|b| b == chunk_header)
-                            {
-                                is_chunked = true;
+                            if is_chunked == false {
+                                if let Some(_) = buffer
+                                    .windows(chunk_header.len())
+                                    .position(|b| b == chunk_header)
+                                {
+                                    is_chunked = true;
+                                }
                             }
 
                             match thread_self.parse_http_protocol(&buffer, is_chunked) {
