@@ -117,15 +117,43 @@ impl Rpress {
             payload = buffer[body_start..body_end].to_vec();
             total_consumed = body_end;
         } else {
+            // on this parse we are ignoring the trailer and the [chunk-content]
+
             // payload example:
             // | 11
             // | {
             // | 	"data": "oi"
             // | }
+            // | 11
+            // | {
+            // | 	"data": "oi"
+            // | }
             // | 0
-            // we must implementate a machanism of security to prevent huge payload on memory
 
-            println!("Parse the rest of the message");
+            let hex_position = buffer.windows(2).position(|p| p == b"\r\n");
+            let hex_bytes = if let Some(value) = hex_position {
+                value
+            } else {
+                return Err("Hex position dot found on chunk");
+            };
+
+            let decimal_size =
+                match usize::from_str_radix(&String::from_utf8_lossy(&buffer[..hex_bytes]), 16) {
+                    Ok(decimal) => decimal,
+                    Err(err) => {
+                        println!("Error in parse hex value: {:?}", err);
+                        0
+                    }
+                };
+
+            let start = hex_bytes + 2;
+            let end = start + decimal_size;
+            let payload_chunk = &buffer[start..end];
+
+            println!(
+                "decilmal size: {:?}",
+                String::from_utf8_lossy(payload_chunk)
+            );
         }
 
         Ok(Some((
