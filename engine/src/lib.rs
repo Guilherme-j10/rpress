@@ -55,7 +55,7 @@ impl Rpress {
 
         let mut request_metadata: Option<RequestMetadata> = None;
         let mut payload = vec![];
-        let mut total_consumed = 0;
+        let total_consumed:usize;
 
         if parse_only_chunk == false && is_chunk || parse_only_chunk == false && is_chunk == false {
             let rq_bytes = if let Some(request_bytes) = rq_line {
@@ -119,36 +119,49 @@ impl Rpress {
             payload = buffer[body_start..body_end].to_vec();
             total_consumed = body_end;
         } else {
-            let hexsize_bytes = buffer.windows(2).position(|p| p == b"\r\n");
-            let hexline_bytes = if let Some(value) = hexsize_bytes {
-                value
-            } else {
-                return Err("Hex position dot found on chunk");
-            };
+            let mut cursor: usize = 0;
+            let mut accumulator: Vec<u8> = vec![];
 
-            let decimal_bytes = match buffer[..hexline_bytes].iter().position(|b| &[*b] == b";") {
-                Some(position) => position,
-                None => hexline_bytes,
-            };
-
-            let decimal_size =
-                match usize::from_str_radix(&String::from_utf8_lossy(&buffer[..decimal_bytes]), 16)
+            loop {
+                let relative_hex_end = match buffer[cursor..].windows(2).position(|p| p == b"\r\n")
                 {
-                    Ok(decimal) => decimal,
-                    Err(err) => {
-                        println!("Error in parse hex value: {:?}", err);
-                        0
-                    }
+                    Some(pos) => pos,
+                    None => break,
                 };
 
-            let start = hexline_bytes + 2;
-            let end = start + decimal_size;
-            let payload_chunk = &buffer[start..end];
+                let hex_line_start = cursor;
+                let hex_line_end = cursor + relative_hex_end;
 
-            println!(
-                "decilmal size: {:?}",
-                String::from_utf8_lossy(payload_chunk)
-            );
+                let hex_content_end = buffer[hex_line_start..hex_line_end]
+                    .iter()
+                    .position(|&b| b == b';')
+                    .map(|pos| hex_line_start + pos)
+                    .unwrap_or(hex_line_end);
+
+                let hex_str = String::from_utf8_lossy(&buffer[hex_line_start..hex_content_end]);
+                let decimal_size = match usize::from_str_radix(hex_str.trim(), 16) {
+                    Ok(size) => size,
+                    Err(_) => break,
+                };
+
+                if decimal_size == 0 {
+                    cursor = hex_line_end + 4;
+                    break;
+                }
+
+                let data_start = hex_line_end + 2;
+                let data_end = data_start + decimal_size;
+
+                if buffer.len() < data_end + 2 {
+                    break;
+                }
+
+                accumulator.extend_from_slice(&buffer[data_start..data_end]);
+                cursor = data_end + 2;
+            }
+
+            total_consumed = cursor;
+            payload = accumulator
         }
 
         Ok(Some((
