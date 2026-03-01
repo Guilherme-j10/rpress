@@ -43,7 +43,9 @@ impl Rpress {
         let mut parse_only_chunk = false;
         let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
 
-        if rq_line.is_some() && rq_line.unwrap() < 3 {
+        if rq_line.is_some() && rq_line.unwrap() < 3
+            || String::from_utf8_lossy(&buffer[..rq_line.unwrap()]).contains("HTTP/1.1") == false
+        {
             if is_chunk {
                 parse_only_chunk = true;
             } else {
@@ -117,28 +119,21 @@ impl Rpress {
             payload = buffer[body_start..body_end].to_vec();
             total_consumed = body_end;
         } else {
-            // on this parse we are ignoring the trailer and the [chunk-content]
-
-            // payload example:
-            // | 11
-            // | {
-            // | 	"data": "oi"
-            // | }
-            // | 11
-            // | {
-            // | 	"data": "oi"
-            // | }
-            // | 0
-
-            let hex_position = buffer.windows(2).position(|p| p == b"\r\n");
-            let hex_bytes = if let Some(value) = hex_position {
+            let hexsize_bytes = buffer.windows(2).position(|p| p == b"\r\n");
+            let hexline_bytes = if let Some(value) = hexsize_bytes {
                 value
             } else {
                 return Err("Hex position dot found on chunk");
             };
 
+            let decimal_bytes = match buffer[..hexline_bytes].iter().position(|b| &[*b] == b";") {
+                Some(position) => position,
+                None => hexline_bytes,
+            };
+
             let decimal_size =
-                match usize::from_str_radix(&String::from_utf8_lossy(&buffer[..hex_bytes]), 16) {
+                match usize::from_str_radix(&String::from_utf8_lossy(&buffer[..decimal_bytes]), 16)
+                {
                     Ok(decimal) => decimal,
                     Err(err) => {
                         println!("Error in parse hex value: {:?}", err);
@@ -146,7 +141,7 @@ impl Rpress {
                     }
                 };
 
-            let start = hex_bytes + 2;
+            let start = hexline_bytes + 2;
             let end = start + decimal_size;
             let payload_chunk = &buffer[start..end];
 
