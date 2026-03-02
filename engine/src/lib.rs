@@ -1,9 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::io::AsyncReadExt;
 
-#[derive(Debug)]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+type AsyncHandler = Box<dyn Fn(Request) -> BoxFuture<'static, ()> + Send + Sync>;
+
 pub struct Route {
     pub name: String,
+    pub handler: AsyncHandler,
 }
 
 #[derive(Debug)]
@@ -29,9 +32,17 @@ impl Rpress {
         Arc::new(Self { routes: vec![] })
     }
 
-    pub fn add_route<T: Into<String>>(self: &mut Arc<Self>, name: T) -> () {
+    pub fn add_route<T, F, Fut>(self: &mut Arc<Self>, name: T, handler: F)
+    where
+        T: Into<String>,
+        F: Fn(Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         if let Some(rpress) = Arc::get_mut(self) {
-            rpress.routes.push(Route { name: name.into() });
+            rpress.routes.push(Route {
+                name: name.into(),
+                handler: Box::new(move |req| Box::pin(handler(req)))
+            });
         }
     }
 
@@ -55,7 +66,7 @@ impl Rpress {
 
         let mut request_metadata: Option<RequestMetadata> = None;
         let mut payload = vec![];
-        let total_consumed:usize;
+        let total_consumed: usize;
 
         if parse_only_chunk == false && is_chunk || parse_only_chunk == false && is_chunk == false {
             let rq_bytes = if let Some(request_bytes) = rq_line {
