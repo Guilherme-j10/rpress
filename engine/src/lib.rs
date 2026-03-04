@@ -1,8 +1,11 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::io::AsyncReadExt;
 
+pub mod core;
+pub mod types;
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-type AsyncHandler = Box<dyn Fn(Request) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type AsyncHandler = Box<dyn Fn(Request) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct Route {
     pub name: String,
@@ -41,7 +44,7 @@ impl Rpress {
         if let Some(rpress) = Arc::get_mut(self) {
             rpress.routes.push(Route {
                 name: name.into(),
-                handler: Box::new(move |req| Box::pin(handler(req)))
+                handler: Box::new(move |req| Box::pin(handler(req))),
             });
         }
     }
@@ -201,6 +204,8 @@ impl Rpress {
                     let chunk_header = b"Transfer-Encoding: chunked";
                     let mut is_chunked = false;
 
+                    let mut current_request: Vec<Request> = vec![];
+
                     loop {
                         loop {
                             if buffer.len() == 0 {
@@ -218,7 +223,18 @@ impl Rpress {
 
                             match thread_self.parse_http_protocol(&buffer, is_chunked) {
                                 Ok(Some((request, consumed))) => {
-                                    dbg!("{:?}", request);
+                                    let has_metadata = request.request_metadata.is_some();
+                                    let has_payload = !request.payload.is_empty();
+
+                                    if has_metadata {
+                                        current_request.push(request);
+                                    } else if has_payload {
+                                        if let Some(cr) = current_request.last_mut() {
+                                            cr.payload.extend(request.payload);
+                                        }
+                                    }
+                                    
+
                                     buffer.drain(..consumed);
                                 }
                                 Ok(None) => {
@@ -231,6 +247,10 @@ impl Rpress {
                                 }
                             }
                         }
+
+                        //process request with current_requests
+                        current_request = vec![];
+                        is_chunked = false;
 
                         let n = match socket.read(&mut temp_buffer).await {
                             Ok(0) => break,
