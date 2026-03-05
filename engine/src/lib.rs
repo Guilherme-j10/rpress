@@ -1,190 +1,56 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
-use tokio::io::AsyncReadExt;
-
 pub mod core;
 pub mod types;
 
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-pub type AsyncHandler = Box<dyn Fn(Request) -> BoxFuture<'static, ()> + Send + Sync>;
+use std::sync::Arc;
 
-pub struct Route {
-    pub name: String,
-    pub handler: AsyncHandler,
-}
+use regex::Regex;
+use tokio::io::AsyncReadExt;
 
-#[derive(Debug)]
-pub struct RequestMetadata {
-    pub method: String,
-    pub uri: String,
-    pub http_method: String,
-    pub headers: HashMap<String, String>,
-}
-
-#[derive(Debug)]
-pub struct Request {
-    pub request_metadata: Option<RequestMetadata>,
-    pub payload: Vec<u8>,
-}
+use crate::{
+    core::{request::Request, response::Response},
+    types::definitions::{HttpVerbs, RequestPayload, Route},
+};
 
 pub struct Rpress {
     pub routes: Vec<Route>,
+    pub max_buffer_capacity: usize,
 }
 
 impl Rpress {
     pub fn build() -> Arc<Self> {
-        Arc::new(Self { routes: vec![] })
+        Arc::new(Self {
+            routes: vec![],
+            max_buffer_capacity: 40096,
+        })
     }
 
-    pub fn add_route<T, F, Fut>(self: &mut Arc<Self>, name: T, handler: F)
+    pub fn set_buffer_capacity(self: &mut Arc<Self>, capacity: usize) -> () {
+        if let Some(rpress) = Arc::get_mut(self) {
+            rpress.max_buffer_capacity = capacity;
+        }
+    }
+
+    // space can be (+) or (%20)
+    pub fn route<T, F, Fut>(self: &mut Arc<Self>, name: T, handler: F)
     where
         T: Into<String>,
-        F: Fn(Request) -> Fut + Send + Sync + 'static,
+        F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         if let Some(rpress) = Arc::get_mut(self) {
+            let route = name.into();
+            let mregex = Regex::new(r"\:(.*)\/").unwrap();
+            let look_for_method = match mregex.captures(&route) {
+                Some(method) => method,
+                None => panic!("HTTP method not found"),
+            };
+
             rpress.routes.push(Route {
-                name: name.into(),
+                method: String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())),
+                name: route,
                 handler: Box::new(move |req| Box::pin(handler(req))),
             });
         }
-    }
-
-    pub fn parse_http_protocol(
-        &self,
-        buffer: &[u8],
-        is_chunk: bool,
-    ) -> Result<Option<(Request, usize)>, &'static str> {
-        let mut parse_only_chunk = false;
-        let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
-
-        if rq_line.is_some() && rq_line.unwrap() < 3
-            || String::from_utf8_lossy(&buffer[..rq_line.unwrap()]).contains("HTTP/1.1") == false
-        {
-            if is_chunk {
-                parse_only_chunk = true;
-            } else {
-                return Err("Request line possibly malformed");
-            }
-        }
-
-        let mut request_metadata: Option<RequestMetadata> = None;
-        let mut payload = vec![];
-        let total_consumed: usize;
-
-        if parse_only_chunk == false && is_chunk || parse_only_chunk == false && is_chunk == false {
-            let rq_bytes = if let Some(request_bytes) = rq_line {
-                request_bytes
-            } else {
-                return Err("Request line not found");
-            };
-
-            let mut request_line = buffer[..rq_bytes]
-                .split(|&b| [b] == *b" ")
-                .collect::<Vec<&[u8]>>();
-
-            let request_line_content = request_line
-                .iter_mut()
-                .map(|v| String::from_utf8_lossy(v).into_owned())
-                .collect::<Vec<String>>();
-
-            if request_line_content.len() < 3 {
-                return Err("Invalid request line size");
-            }
-
-            let h_lines = buffer.windows(4).position(|b| b == b"\r\n\r\n");
-            let h_bytes = if let Some(val) = h_lines {
-                val
-            } else {
-                return Err("Invalid headers");
-            };
-
-            let header_lines = &buffer[rq_bytes + 2..h_bytes];
-            let headers_str = String::from_utf8_lossy(header_lines).to_owned();
-            let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
-            let mut content_lenght = 0;
-
-            let mut header_map: HashMap<String, String> = HashMap::new();
-            for header in headers {
-                let data = header.split(": ").collect::<Vec<_>>();
-
-                let index = data.get(0).unwrap().to_string();
-                let value = data.get(1).unwrap().to_string();
-
-                if index == "Content-Length" {
-                    content_lenght = value.parse().unwrap();
-                }
-
-                header_map.insert(index, value);
-            }
-
-            let body_start = h_bytes + 4;
-            let body_end = body_start + content_lenght;
-
-            if buffer.len() < body_end {
-                return Ok(None);
-            }
-
-            request_metadata = Some(RequestMetadata {
-                uri: request_line_content.get(1).unwrap().to_owned(),
-                method: request_line_content.get(0).unwrap().to_owned(),
-                http_method: request_line_content.get(2).unwrap().to_owned(),
-                headers: header_map,
-            });
-            payload = buffer[body_start..body_end].to_vec();
-            total_consumed = body_end;
-        } else {
-            let mut cursor: usize = 0;
-            let mut accumulator: Vec<u8> = vec![];
-
-            loop {
-                let relative_hex_end = match buffer[cursor..].windows(2).position(|p| p == b"\r\n")
-                {
-                    Some(pos) => pos,
-                    None => break,
-                };
-
-                let hex_line_start = cursor;
-                let hex_line_end = cursor + relative_hex_end;
-
-                let hex_content_end = buffer[hex_line_start..hex_line_end]
-                    .iter()
-                    .position(|&b| b == b';')
-                    .map(|pos| hex_line_start + pos)
-                    .unwrap_or(hex_line_end);
-
-                let hex_str = String::from_utf8_lossy(&buffer[hex_line_start..hex_content_end]);
-                let decimal_size = match usize::from_str_radix(hex_str.trim(), 16) {
-                    Ok(size) => size,
-                    Err(_) => break,
-                };
-
-                if decimal_size == 0 {
-                    cursor = hex_line_end + 4;
-                    break;
-                }
-
-                let data_start = hex_line_end + 2;
-                let data_end = data_start + decimal_size;
-
-                if buffer.len() < data_end + 2 {
-                    break;
-                }
-
-                accumulator.extend_from_slice(&buffer[data_start..data_end]);
-                cursor = data_end + 2;
-            }
-
-            total_consumed = cursor;
-            payload = accumulator
-        }
-
-        Ok(Some((
-            Request {
-                request_metadata,
-                payload,
-            },
-            total_consumed,
-        )))
     }
 
     pub async fn server<T: Into<String>>(self: Arc<Self>, listener: T) -> anyhow::Result<()> {
@@ -197,14 +63,16 @@ impl Rpress {
                 let thread_self = self.clone();
 
                 async move {
-                    let max_capacity = 40096;
+                    //let max_capacity = 40096;
                     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
                     let mut temp_buffer = [0; 1024];
 
                     let chunk_header = b"Transfer-Encoding: chunked";
                     let mut is_chunked = false;
 
-                    let mut current_request: Vec<Request> = vec![];
+                    let request = Request::new();
+                    let _response = Response::new();
+                    let mut current_request: Vec<RequestPayload> = vec![];
 
                     loop {
                         loop {
@@ -221,7 +89,7 @@ impl Rpress {
                                 }
                             }
 
-                            match thread_self.parse_http_protocol(&buffer, is_chunked) {
+                            match request.parse_http_protocol(&buffer, is_chunked) {
                                 Ok(Some((request, consumed))) => {
                                     let has_metadata = request.request_metadata.is_some();
                                     let has_payload = !request.payload.is_empty();
@@ -233,7 +101,6 @@ impl Rpress {
                                             cr.payload.extend(request.payload);
                                         }
                                     }
-                                    
 
                                     buffer.drain(..consumed);
                                 }
@@ -249,6 +116,16 @@ impl Rpress {
                         }
 
                         //process request with current_requests
+                        for request in current_request {
+                            match request.request_metadata {
+                                Some(metadata) => {
+                                    let _payload = request.payload;
+                                    println!("{:?}", metadata);
+                                }
+                                None => {}
+                            }
+                        }
+
                         current_request = vec![];
                         is_chunked = false;
 
@@ -263,7 +140,7 @@ impl Rpress {
 
                         buffer.extend_from_slice(&temp_buffer[..n]);
 
-                        if buffer.len() > max_capacity {
+                        if buffer.len() > thread_self.max_buffer_capacity {
                             println!("Buffer capacity overflowed");
                             break;
                         }

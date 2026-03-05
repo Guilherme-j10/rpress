@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { workspace = true }
 anyhow = { workspace = true }
+regex = "1.12.3"

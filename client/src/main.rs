@@ -4,12 +4,12 @@ use engine::Rpress;
 async fn main() -> anyhow::Result<()> {
     let mut app = Rpress::build();
 
-    app.add_route("/firstname", |req| async move {
+    app.route(":get/firstname", |req| async move {
         println!("{:?}", req);
     });
 
-    app.add_route("/lastname", |req| async move {
-        dbg!(req);
+    app.route(":get/lastname", |req| async move {
+        println!("{:?}", req);
     });
 
     app.server("0.0.0.0:3434").await?;
