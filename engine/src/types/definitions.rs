@@ -1,12 +1,16 @@
-use std::{collections::HashMap, pin::Pin};
+use std::{collections::HashMap, pin::Pin, sync::LazyLock};
 
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-pub type AsyncHandler = Box<dyn Fn(RequestPayload) -> BoxFuture<'static, ()> + Send + Sync>;
+use regex::Regex;
+
+pub static HTTP_METHOD_REG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\:(.*)\/").unwrap());
+
+pub type Handler =
+    Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
 
 pub struct Route {
     pub method: String,
     pub name: String,
-    pub handler: AsyncHandler,
+    pub handler: Handler,
 }
 
 #[derive(Debug)]
@@ -29,7 +33,7 @@ pub enum HttpVerbs {
     POST,
     DELETE,
     PUT,
-    PATCH
+    PATCH,
 }
 
 impl From<&str> for HttpVerbs {
@@ -39,7 +43,7 @@ impl From<&str> for HttpVerbs {
             "post" => HttpVerbs::POST,
             "put" => HttpVerbs::PUT,
             "get" => HttpVerbs::GET,
-            &_ => panic!("Unknown http method: {}", method)
+            &_ => panic!("Unknown http method: {}", method),
         }
     }
 }
@@ -120,7 +124,9 @@ impl From<StatusCode> for String {
             StatusCode::Ok => String::from("Ok"),
             StatusCode::Created => String::from("Created"),
             StatusCode::Accepted => String::from("Accepted"),
-            StatusCode::NonAuthoritativeInformation => String::from("Non-Authoritative Information"),
+            StatusCode::NonAuthoritativeInformation => {
+                String::from("Non-Authoritative Information")
+            }
             StatusCode::NoContent => String::from("No Content"),
             StatusCode::ResetContent => String::from("Reset Content"),
             StatusCode::PartialContent => String::from("Partial Content"),
@@ -132,7 +138,9 @@ impl From<StatusCode> for String {
             StatusCode::NotFound => String::from("Not Found"),
             StatusCode::MethodNotAllowed => String::from("Method Not Allowed"),
             StatusCode::NotAcceptable => String::from("Not Acceptable"),
-            StatusCode::ProxyAuthenticationRequired => String::from("Proxy Authentication Required"),
+            StatusCode::ProxyAuthenticationRequired => {
+                String::from("Proxy Authentication Required")
+            }
             StatusCode::RequestTimeout => String::from("Request Timeout"),
             StatusCode::Conflict => String::from("Conflict"),
             StatusCode::Gone => String::from("Gone"),
@@ -149,7 +157,9 @@ impl From<StatusCode> for String {
             StatusCode::UpgradeRequired => String::from("Upgrade Required"),
             StatusCode::PreconditionRequired => String::from("Precondition Required"),
             StatusCode::TooManyRequests => String::from("Too Many Requests"),
-            StatusCode::RequestHeaderFieldsTooLarge => String::from("Request Header Fields Too Large"),
+            StatusCode::RequestHeaderFieldsTooLarge => {
+                String::from("Request Header Fields Too Large")
+            }
             StatusCode::InternalServerError => String::from("Internal Server Error"),
             StatusCode::NotImplemented => String::from("Not Implemented"),
             StatusCode::BadGateway => String::from("Bad Gateway"),
@@ -160,7 +170,9 @@ impl From<StatusCode> for String {
             StatusCode::InsufficientStorage => String::from("Insufficient Storage"),
             StatusCode::LoopDetected => String::from("Loop Detected"),
             StatusCode::NotExtended => String::from("Not Extended"),
-            StatusCode::NetworkAuthenticationRequired => String::from("Network Authentication Required"),
+            StatusCode::NetworkAuthenticationRequired => {
+                String::from("Network Authentication Required")
+            }
             StatusCode::UnknownError => String::from("Unknown Error"),
         }
     }

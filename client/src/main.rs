@@ -2,7 +2,7 @@ use engine::Rpress;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut app = Rpress::build();
+    let mut app = Rpress::new();
 
     app.route(":get/firstname", |req| async move {
         println!("{:?}", req);

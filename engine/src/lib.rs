@@ -3,12 +3,11 @@ pub mod types;
 
 use std::sync::Arc;
 
-use regex::Regex;
 use tokio::io::AsyncReadExt;
 
 use crate::{
     core::{request::Request, response::Response},
-    types::definitions::{HttpVerbs, RequestPayload, Route},
+    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, Route},
 };
 
 pub struct Rpress {
@@ -17,7 +16,7 @@ pub struct Rpress {
 }
 
 impl Rpress {
-    pub fn build() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             routes: vec![],
             max_buffer_capacity: 40096,
@@ -39,8 +38,7 @@ impl Rpress {
     {
         if let Some(rpress) = Arc::get_mut(self) {
             let route = name.into();
-            let mregex = Regex::new(r"\:(.*)\/").unwrap();
-            let look_for_method = match mregex.captures(&route) {
+            let look_for_method = match HTTP_METHOD_REG.captures(&route) {
                 Some(method) => method,
                 None => panic!("HTTP method not found"),
             };
@@ -51,6 +49,10 @@ impl Rpress {
                 handler: Box::new(move |req| Box::pin(handler(req))),
             });
         }
+    }
+
+    async fn dispatch_route(&self, req: RequestPayload) -> () {
+        todo!();
     }
 
     pub async fn server<T: Into<String>>(self: Arc<Self>, listener: T) -> anyhow::Result<()> {
@@ -117,13 +119,17 @@ impl Rpress {
 
                         //process request with current_requests
                         for request in current_request {
-                            match request.request_metadata {
-                                Some(metadata) => {
-                                    let _payload = request.payload;
-                                    println!("{:?}", metadata);
-                                }
-                                None => {}
-                            }
+                            thread_self.dispatch_route(request).await;
+                            // match request.request_metadata {
+                            //     Some(ref metadata) => {
+                            //         if let Some(route) =
+                            //             thread_self.routes.iter().find(|r| r.name == metadata.uri)
+                            //         {
+                            //             (route.handler)(request).await;
+                            //         }
+                            //     }
+                            //     None => {}
+                            // }
                         }
 
                         current_request = vec![];
