@@ -7,12 +7,6 @@ pub static HTTP_METHOD_REG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\:(.
 pub type Handler =
     Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
 
-pub struct Route {
-    pub method: String,
-    pub name: String,
-    pub handler: Handler,
-}
-
 #[derive(Debug)]
 pub struct RequestMetadata {
     pub method: String,

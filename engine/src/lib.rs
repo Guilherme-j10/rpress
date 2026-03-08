@@ -1,24 +1,22 @@
 pub mod core;
 pub mod types;
 
+use crate::{
+    core::{request::Request, response::Response, routes::Route},
+    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload},
+};
 use std::sync::Arc;
-
 use tokio::io::AsyncReadExt;
 
-use crate::{
-    core::{request::Request, response::Response},
-    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, Route},
-};
-
 pub struct Rpress {
-    pub routes: Vec<Route>,
+    routes_tree: Route,
     pub max_buffer_capacity: usize,
 }
 
 impl Rpress {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            routes: vec![],
+            routes_tree: Route::new(),
             max_buffer_capacity: 40096,
         })
     }
@@ -43,16 +41,26 @@ impl Rpress {
                 None => panic!("HTTP method not found"),
             };
 
-            rpress.routes.push(Route {
-                method: String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())),
-                name: route,
-                handler: Box::new(move |req| Box::pin(handler(req))),
-            });
+            rpress.routes_tree.insert_route(
+                route.as_str(),
+                String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
+                Box::new(move |req| Box::pin(handler(req))),
+            );
         }
     }
 
-    async fn dispatch_route(&self, req: RequestPayload) -> () {
-        todo!();
+    async fn dispatch_route(&self, _req: RequestPayload) -> () {
+        if let Some(ref meta) = _req.request_metadata {
+            if let Some(route) = self.routes_tree.find(meta.uri.as_str()) {
+                let handler = route.0;
+                let method = route.1;
+                let _params = route.2;
+
+                if meta.method == *method {
+                    handler(_req).await;
+                }
+            }
+        }
     }
 
     pub async fn server<T: Into<String>>(self: Arc<Self>, listener: T) -> anyhow::Result<()> {
@@ -65,7 +73,6 @@ impl Rpress {
                 let thread_self = self.clone();
 
                 async move {
-                    //let max_capacity = 40096;
                     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
                     let mut temp_buffer = [0; 1024];
 
