@@ -2,7 +2,7 @@ use std::{collections::HashMap, pin::Pin, sync::LazyLock};
 
 use regex::Regex;
 
-pub static HTTP_METHOD_REG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\:(.*)\/").unwrap());
+pub static HTTP_METHOD_REG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
 
 pub type Handler =
     Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
@@ -20,7 +20,6 @@ pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
 }
-
 #[derive(Debug)]
 pub enum HttpVerbs {
     GET,
@@ -29,7 +28,6 @@ pub enum HttpVerbs {
     PUT,
     PATCH,
 }
-
 impl From<&str> for HttpVerbs {
     fn from(method: &str) -> HttpVerbs {
         match method {

@@ -67,7 +67,7 @@ impl Route {
             return;
         }
 
-        let current_segment = segments[1];
+        let current_segment = segments[0];
         let remaining = &segments[1..];
 
         if current_segment.starts_with(":") {

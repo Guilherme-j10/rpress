@@ -5,7 +5,7 @@ use crate::{
     core::{request::Request, response::Response, routes::Route},
     types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload},
 };
-use std::sync::Arc;
+use std::{sync::Arc};
 use tokio::io::AsyncReadExt;
 
 pub struct Rpress {
@@ -42,7 +42,7 @@ impl Rpress {
             };
 
             rpress.routes_tree.insert_route(
-                route.as_str(),
+                &look_for_method[2],
                 String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
                 Box::new(move |req| Box::pin(handler(req))),
             );
