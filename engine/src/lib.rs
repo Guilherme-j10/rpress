@@ -38,7 +38,7 @@ impl Rpress {
             let route = name.into();
             let look_for_method = match HTTP_METHOD_REG.captures(&route) {
                 Some(method) => method,
-                None => panic!("HTTP method not found"),
+                None => panic!("HTTP method ot found"),
             };
 
             rpress.routes_tree.insert_route(
@@ -124,19 +124,8 @@ impl Rpress {
                             }
                         }
 
-                        //process request with current_requests
                         for request in current_request {
                             thread_self.dispatch_route(request).await;
-                            // match request.request_metadata {
-                            //     Some(ref metadata) => {
-                            //         if let Some(route) =
-                            //             thread_self.routes.iter().find(|r| r.name == metadata.uri)
-                            //         {
-                            //             (route.handler)(request).await;
-                            //         }
-                            //     }
-                            //     None => {}
-                            // }
                         }
 
                         current_request = vec![];
