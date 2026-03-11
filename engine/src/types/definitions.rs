@@ -52,6 +52,95 @@ impl From<HttpVerbs> for String {
     }
 }
 
+pub enum HeadersResponse {
+    Date,
+    Content,
+    ContentLength,
+    ContentType,
+    ContentEncoding,
+    ContentLanguage,
+    ContentLocation,
+    ContentRange,
+    ContentDisposition,
+    ContentSecurityPolicy,
+    ContentSecurityPolicyReportOnly,
+    Expires,
+    LastModified,
+    Location,
+    Pragma,
+    RetryAfter,
+    Server,
+    SetCookie,
+    Vary,
+    WWWAuthenticate,
+    XContentTypeOptions,
+    XPoweredBy,
+    XRequestID,
+    XRobotsTag,
+    XUACompatible,
+    XFrameOptions,
+    XXSSProtection,
+    AltSvc,
+    AcceptPatch,
+    AcceptRanges,
+    Age,
+    Allow,
+    AltUsed,
+    CacheControl,
+    Connection,
+    ContentMD5,
+    ETag,
+    TransferEncoding,
+    Upgrade,
+}
+
+impl From<HeadersResponse> for String {
+    fn from(header: HeadersResponse) -> String {
+        match header {
+            HeadersResponse::Date => String::from("Date"),
+            HeadersResponse::Content => String::from("Content"),
+            HeadersResponse::ContentLength => String::from("Content-Length"),
+            HeadersResponse::ContentType => String::from("Content-Type"),
+            HeadersResponse::ContentEncoding => String::from("Content-Encoding"),
+            HeadersResponse::ContentLanguage => String::from("Content-Language"),
+            HeadersResponse::ContentLocation => String::from("Content-Location"),
+            HeadersResponse::ContentRange => String::from("Content-Range"),
+            HeadersResponse::ContentDisposition => String::from("Content-Disposition"),
+            HeadersResponse::ContentSecurityPolicy => String::from("Content-Security-Policy"),
+            HeadersResponse::ContentSecurityPolicyReportOnly => String::from("Content-Security-Policy-Report-Only"),
+            HeadersResponse::Expires => String::from("Expires"),
+            HeadersResponse::LastModified => String::from("Last-Modified"),
+            HeadersResponse::Location => String::from("Location"),
+            HeadersResponse::Pragma => String::from("Pragma"),
+            HeadersResponse::RetryAfter => String::from("Retry-After"),
+            HeadersResponse::Server => String::from("Server"),
+            HeadersResponse::SetCookie => String::from("Set-Cookie"),
+            HeadersResponse::Vary => String::from("Vary"),
+            HeadersResponse::WWWAuthenticate => String::from("WWW-Authenticate"),
+            HeadersResponse::XContentTypeOptions => String::from("X-Content-Type-Options"),
+            HeadersResponse::XPoweredBy => String::from("X-Powered-By"),
+            HeadersResponse::XRequestID => String::from("X-Request-ID"),
+            HeadersResponse::XRobotsTag => String::from("X-Robots-Tag"),
+            HeadersResponse::XUACompatible => String::from("X-UA-Compatible"),
+            HeadersResponse::XFrameOptions => String::from("X-Frame-Options"),
+            HeadersResponse::XXSSProtection => String::from("X-XSS-Protection"),
+            HeadersResponse::AltSvc => String::from("Alt-Svc"),
+            HeadersResponse::AcceptPatch => String::from("Accept-Patch"),
+            HeadersResponse::AcceptRanges => String::from("Accept-Ranges"),
+            HeadersResponse::Age => String::from("Age"),
+            HeadersResponse::Allow => String::from("Allow"),
+            HeadersResponse::AltUsed => String::from("Alt-Used"),
+            HeadersResponse::CacheControl => String::from("Cache-Control"),
+            HeadersResponse::Connection => String::from("Connection"),
+            HeadersResponse::ContentMD5 => String::from("Content-MD5"),
+            HeadersResponse::ETag => String::from("ETag"),
+            HeadersResponse::TransferEncoding => String::from("Transfer-Encoding"),
+            HeadersResponse::Upgrade => String::from("Upgrade")
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum StatusCode {
     Continue = 100,
     SwitchingProtocols = 101,
@@ -102,14 +191,14 @@ pub enum StatusCode {
     UnknownError = 520,
 }
 
-impl Into<u16> for StatusCode {
-    fn into(self) -> u16 {
-        self as u16
+impl From<StatusCode> for u16 {
+    fn from(status: StatusCode) -> Self {
+        status as u16
     }
 }
 
-impl From<StatusCode> for String {
-    fn from(status: StatusCode) -> Self {
+impl From<&StatusCode> for String {
+    fn from(status: &StatusCode) -> Self {
         match status {
             StatusCode::Continue => String::from("Continue"),
             StatusCode::SwitchingProtocols => String::from("Switching Protocols"),

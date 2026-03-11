@@ -3,9 +3,9 @@ pub mod types;
 
 use crate::{
     core::{request::Request, response::Response, routes::Route},
-    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload},
+    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, StatusCode},
 };
-use std::{sync::Arc};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
 pub struct Rpress {
@@ -49,7 +49,7 @@ impl Rpress {
         }
     }
 
-    async fn dispatch_route(&self, _req: RequestPayload) -> () {
+    async fn dispatch_route(&self, _req: RequestPayload, socket: &mut tokio::net::TcpStream) -> () {
         if let Some(ref meta) = _req.request_metadata {
             if let Some(route) = self.routes_tree.find(meta.uri.as_str()) {
                 let handler = route.0;
@@ -59,6 +59,9 @@ impl Rpress {
                 if meta.method == *method {
                     handler(_req).await;
                 }
+            } else {
+                let mut response = Response::new(socket);
+                let _ = response.send_response(StatusCode::NotFound).await;
             }
         }
     }
@@ -80,7 +83,6 @@ impl Rpress {
                     let mut is_chunked = false;
 
                     let request = Request::new();
-                    let _response = Response::new();
                     let mut current_request: Vec<RequestPayload> = vec![];
 
                     loop {
@@ -125,7 +127,7 @@ impl Rpress {
                         }
 
                         for request in current_request {
-                            thread_self.dispatch_route(request).await;
+                            thread_self.dispatch_route(request, &mut socket).await;
                         }
 
                         current_request = vec![];
