@@ -141,8 +141,22 @@ impl Request {
             RequestPayload {
                 request_metadata,
                 payload,
+                params: HashMap::default()
             },
             total_consumed,
         )))
+    }
+}
+
+impl RequestPayload {
+    pub fn set_params(&mut self, params: HashMap<String, String>) -> () {
+        self.params = params;
+    }
+
+    pub fn get_param(&self, index: &str) -> Result<String, &'static str> {
+        match self.params.get(index) {
+            Some(value) => Ok(value.to_owned()),
+            None => Err("Param not found.")
+        }
     }
 }

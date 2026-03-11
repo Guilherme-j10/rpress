@@ -3,7 +3,7 @@ pub mod types;
 
 use crate::{
     core::{request::Request, response::Response, routes::Route},
-    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, StatusCode},
+    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, RpressResult, StatusCode},
 };
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -32,7 +32,7 @@ impl Rpress {
     where
         T: Into<String>,
         F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = RpressResult> + Send + 'static,
     {
         if let Some(rpress) = Arc::get_mut(self) {
             let route = name.into();
@@ -49,19 +49,46 @@ impl Rpress {
         }
     }
 
-    async fn dispatch_route(&self, _req: RequestPayload, socket: &mut tokio::net::TcpStream) -> () {
-        if let Some(ref meta) = _req.request_metadata {
+    async fn dispatch_route(
+        &self,
+        mut req: RequestPayload,
+        socket: &mut tokio::net::TcpStream,
+    ) -> () {
+        if let Some(ref meta) = req.request_metadata {
+            let mut response = Response::new(socket);
+
             if let Some(route) = self.routes_tree.find(meta.uri.as_str()) {
                 let handler = route.0;
                 let method = route.1;
-                let _params = route.2;
+                let params = route.2;
 
                 if meta.method == *method {
-                    handler(_req).await;
+                    req.set_params(params);
+                    match handler(req).await {
+                        Ok(payload) => {
+                            let _ = response
+                                .send_response(payload.status, payload.body, payload.content_type)
+                                .await;
+                        }
+                        Err(error) => {
+                            let _ = response
+                                .send_response(
+                                    error.status,
+                                    error.message.into_bytes(),
+                                    "text/plain; charset=utf-8",
+                                )
+                                .await;
+                        }
+                    }
+                } else {
+                    let _ = response
+                        .send_response(StatusCode::MethodNotAllowed, vec![], "text/plain; charset=utf-8")
+                        .await;
                 }
             } else {
-                let mut response = Response::new(socket);
-                let _ = response.send_response(StatusCode::NotFound).await;
+                let _ = response
+                    .send_response(StatusCode::NotFound, vec![], "text/plain; charset=utf-8")
+                    .await;
             }
         }
     }

@@ -7,6 +7,7 @@ edition = "2024"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 regex = "1.12.3"
 chrono = "0.4.44"
 derive_builder = "0.20.2"

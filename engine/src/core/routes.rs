@@ -39,7 +39,11 @@ impl Route {
         params: &mut HashMap<String, String>,
     ) -> Option<(Option<&'a Handler>, Option<&'a String>)> {
         if segments.is_empty() {
-            return Some((self.handler.as_ref(), self.method.as_ref()));
+            if self.handler.is_none() && self.method.is_none() {
+                return None;
+            } else {
+                return Some((self.handler.as_ref(), self.method.as_ref()));
+            }
         }
 
         let current_segment = segments[0];

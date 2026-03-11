@@ -2,10 +2,14 @@ use std::{collections::HashMap, pin::Pin, sync::LazyLock};
 
 use regex::Regex;
 
-pub static HTTP_METHOD_REG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
+use crate::core::handler_response::{ResponsePayload, RpressError};
 
+pub static HTTP_METHOD_REG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
+
+pub type RpressResult = Result<ResponsePayload, RpressError>;
 pub type Handler =
-    Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
+    Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>> + Send + Sync>;
 
 #[derive(Debug)]
 pub struct RequestMetadata {
@@ -19,7 +23,9 @@ pub struct RequestMetadata {
 pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
+    pub params: HashMap<String, String>
 }
+
 #[derive(Debug)]
 pub enum HttpVerbs {
     GET,
@@ -28,6 +34,7 @@ pub enum HttpVerbs {
     PUT,
     PATCH,
 }
+
 impl From<&str> for HttpVerbs {
     fn from(method: &str) -> HttpVerbs {
         match method {
@@ -107,7 +114,9 @@ impl From<HeadersResponse> for String {
             HeadersResponse::ContentRange => String::from("Content-Range"),
             HeadersResponse::ContentDisposition => String::from("Content-Disposition"),
             HeadersResponse::ContentSecurityPolicy => String::from("Content-Security-Policy"),
-            HeadersResponse::ContentSecurityPolicyReportOnly => String::from("Content-Security-Policy-Report-Only"),
+            HeadersResponse::ContentSecurityPolicyReportOnly => {
+                String::from("Content-Security-Policy-Report-Only")
+            }
             HeadersResponse::Expires => String::from("Expires"),
             HeadersResponse::LastModified => String::from("Last-Modified"),
             HeadersResponse::Location => String::from("Location"),
@@ -135,7 +144,7 @@ impl From<HeadersResponse> for String {
             HeadersResponse::ContentMD5 => String::from("Content-MD5"),
             HeadersResponse::ETag => String::from("ETag"),
             HeadersResponse::TransferEncoding => String::from("Transfer-Encoding"),
-            HeadersResponse::Upgrade => String::from("Upgrade")
+            HeadersResponse::Upgrade => String::from("Upgrade"),
         }
     }
 }
