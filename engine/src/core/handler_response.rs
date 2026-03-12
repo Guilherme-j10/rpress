@@ -44,6 +44,13 @@ impl IntoRpressResult for ResponsePayload {
     }
 }
 
+impl<E: RpressErrorExt> IntoRpressResult for E {
+    fn into_result(self) -> Result<ResponsePayload, RpressError> {
+        let (status, message) = self.into_rpress_error();
+        Err(RpressError { status, message })
+    }
+}
+
 impl<E: RpressErrorExt> IntoRpressResult for Result<ResponsePayload, E> {
     fn into_result(self) -> Result<ResponsePayload, RpressError> {
         self.map_err(|e| {

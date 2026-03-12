@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     app.route(":get/custom_erro", handler_external);
+    app.route(":get/custom_erro_without_result", handler_external_no_result);
     app.route(":get/custom_success", custom_success);
 
     app.server("0.0.0.0:3434").await?;
@@ -61,6 +62,12 @@ async fn handler_external(_: RequestPayload) -> Result<ResponsePayload, MyCustom
     Err(MyCustomError {
         message: "teste".to_string(),
     })
+}
+
+async fn handler_external_no_result(_: RequestPayload) -> MyCustomError {
+    MyCustomError {
+        message: "teste".to_string(),
+    }
 }
 
 async fn custom_success(_: RequestPayload) -> ResponsePayload {
