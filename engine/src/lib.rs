@@ -2,8 +2,13 @@ pub mod core;
 pub mod types;
 
 use crate::{
-    core::{request::Request, response::Response, routes::Route},
-    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, RpressResult, StatusCode},
+    core::{
+        handler_response::{IntoRpressResult, RpressErrorExt},
+        request::Request,
+        response::Response,
+        routes::Route,
+    },
+    types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, StatusCode},
 };
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -28,11 +33,12 @@ impl Rpress {
     }
 
     // space can be (+) or (%20)
-    pub fn route<T, F, Fut>(self: &mut Arc<Self>, name: T, handler: F)
+    pub fn route<T, F, Fut, R>(self: &mut Arc<Self>, name: T, handler: F)
     where
         T: Into<String>,
+        R: IntoRpressResult + 'static,
         F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = RpressResult> + Send + 'static,
+        Fut: Future<Output = R> + Send + 'static,
     {
         if let Some(rpress) = Arc::get_mut(self) {
             let route = name.into();
@@ -44,7 +50,11 @@ impl Rpress {
             rpress.routes_tree.insert_route(
                 &look_for_method[2],
                 String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
-                Box::new(move |req| Box::pin(handler(req))),
+                Box::new(move |req| {
+                    let fut = handler(req);
+
+                    Box::pin(async move { fut.await.into_result() })
+                }),
             );
         }
     }
@@ -71,10 +81,11 @@ impl Rpress {
                                 .await;
                         }
                         Err(error) => {
+                            let get_complete_errro = error.into_rpress_error();
                             let _ = response
                                 .send_response(
-                                    error.status,
-                                    error.message.into_bytes(),
+                                    get_complete_errro.0,
+                                    get_complete_errro.1.into_bytes(),
                                     "text/plain; charset=utf-8",
                                 )
                                 .await;
@@ -82,7 +93,11 @@ impl Rpress {
                     }
                 } else {
                     let _ = response
-                        .send_response(StatusCode::MethodNotAllowed, vec![], "text/plain; charset=utf-8")
+                        .send_response(
+                            StatusCode::MethodNotAllowed,
+                            vec![],
+                            "text/plain; charset=utf-8",
+                        )
                         .await;
                 }
             } else {

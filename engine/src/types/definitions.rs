@@ -7,9 +7,12 @@ use crate::core::handler_response::{ResponsePayload, RpressError};
 pub static HTTP_METHOD_REG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
 
-pub type RpressResult = Result<ResponsePayload, RpressError>;
-pub type Handler =
-    Box<dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>> + Send + Sync>;
+pub type RpressResult<E = RpressError> = Result<ResponsePayload, E>;
+pub type Handler = Box<
+    dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Debug)]
 pub struct RequestMetadata {
@@ -23,7 +26,7 @@ pub struct RequestMetadata {
 pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
-    pub params: HashMap<String, String>
+    pub params: HashMap<String, String>,
 }
 
 #[derive(Debug)]

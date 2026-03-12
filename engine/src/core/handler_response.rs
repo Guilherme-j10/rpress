@@ -30,9 +30,38 @@ impl ResponsePayload {
     }
 }
 
+pub trait IntoRpressResult {
+    fn into_result(self) -> Result<ResponsePayload, RpressError>;
+}
+
+pub trait RpressErrorExt {
+    fn into_rpress_error(self) -> (StatusCode, String);
+}
+
+impl IntoRpressResult for ResponsePayload {
+    fn into_result(self) -> Result<ResponsePayload, RpressError> {
+        Ok(self)
+    }
+}
+
+impl<E: RpressErrorExt> IntoRpressResult for Result<ResponsePayload, E> {
+    fn into_result(self) -> Result<ResponsePayload, RpressError> {
+        self.map_err(|e| {
+            let (status, message) = e.into_rpress_error();
+            RpressError { status, message }
+        })
+    }
+}
+
 pub struct RpressError {
     pub status: StatusCode,
     pub message: String,
+}
+
+impl RpressErrorExt for RpressError {
+    fn into_rpress_error(self) -> (StatusCode, String) {
+        (self.status, self.message)
+    }
 }
 
 impl From<serde_json::Error> for RpressError {
