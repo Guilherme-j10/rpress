@@ -6,6 +6,8 @@ use crate::core::handler_response::{ResponsePayload, RpressError};
 
 pub static HTTP_METHOD_REG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
+pub static PERCENT_ENCODING: LazyLock<Regex> = 
+    LazyLock::new(|| Regex::new(r"(%F[0-7](?:%[89AB][0-9A-F]){3})|(%E[0-F](?:%[89AB][0-9A-F]){2})|(%C[23]%[89AB][0-9A-F])|(%[0-9A-F]{2})").unwrap());
 
 pub type RpressResult<E = RpressError> = Result<ResponsePayload, E>;
 pub type Handler = Box<
