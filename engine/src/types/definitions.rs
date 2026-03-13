@@ -18,6 +18,7 @@ pub type Handler = Box<
 pub struct RequestMetadata {
     pub method: String,
     pub uri: String,
+    pub query_path: String,
     pub http_method: String,
     pub headers: HashMap<String, String>,
 }
@@ -27,6 +28,7 @@ pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
     pub params: HashMap<String, String>,
+    pub query: HashMap<String, String>
 }
 
 #[derive(Debug)]

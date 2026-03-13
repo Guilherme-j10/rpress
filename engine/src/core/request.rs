@@ -83,8 +83,21 @@ impl Request {
                 return Ok(None);
             }
 
+            let complete_uri = request_line_content
+                .get(1)
+                .unwrap()
+                .split("?")
+                .collect::<Vec<&str>>();
+
             request_metadata = Some(RequestMetadata {
-                uri: request_line_content.get(1).unwrap().to_owned(),
+                uri: complete_uri
+                    .get(0)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                query_path: complete_uri
+                    .get(1)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
                 method: request_line_content.get(0).unwrap().to_owned(),
                 http_method: request_line_content.get(2).unwrap().to_owned(),
                 headers: header_map,
@@ -141,7 +154,8 @@ impl Request {
             RequestPayload {
                 request_metadata,
                 payload,
-                params: HashMap::default()
+                params: HashMap::default(),
+                query: HashMap::default(),
             },
             total_consumed,
         )))
@@ -156,7 +170,8 @@ impl RequestPayload {
     pub fn get_param(&self, index: &str) -> Result<String, &'static str> {
         match self.params.get(index) {
             Some(value) => Ok(value.to_owned()),
-            None => Err("Param not found.")
+            None => Err("Param not found."),
         }
     }
 }
+
