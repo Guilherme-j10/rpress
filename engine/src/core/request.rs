@@ -176,15 +176,13 @@ impl RequestPayload {
 
     pub fn parse_query<'a>(&'a self) -> Vec<(&'a str, Cow<'a, str>)> {
         if let Some(ref meta) = self.request_metadata {
-            let queries = meta.query_path.split("&").collect::<Vec<&str>>();
             let mut key_value: Vec<(&str, Cow<str>)> = vec![];
+            let mut encodes: Vec<&str> = vec![];
+            let mut bytes: Vec<u8> = vec![];
 
-            for query in queries {
-                let decoded = match query.find("=") {
-                    Some(i) => {
-                        let key = &query[..i];
-                        let raw_value = &query[i + 1..];
-
+            for query in meta.query_path.split("&") {
+                let decoded = match query.split_once("=") {
+                    Some((key, raw_value)) => {
                         let mut final_value = Cow::Borrowed(raw_value);
 
                         if raw_value.contains("%") {
@@ -192,33 +190,42 @@ impl RequestPayload {
                                 .captures_iter(&raw_value)
                                 .map(|c| c.extract::<1>())
                             {
-                                // let value = u8::from_str_radix(&percent.replace("%", ""), 16).unwrap();
-                                let bytes = percent
-                                    .split("%")
-                                    .into_iter()
-                                    .map(|a| u8::from_str_radix(a, 16))
-                                    .flatten()
-                                    .collect::<Vec<_>>();
+                                if !encodes.contains(&percent) {
+                                    encodes.push(percent);
+                                }
+                            }
 
-                                final_value =
-                                    Cow::Owned(final_value.replace(
-                                        percent,
-                                        String::from_utf8(bytes).unwrap().as_str(),
-                                    ));
+                            for encode in encodes.iter() {
+                                bytes.extend(
+                                    encode
+                                        .split("%")
+                                        .filter(|f| !f.is_empty())
+                                        .map(|a| u8::from_str_radix(a, 16))
+                                        .flatten(),
+                                );
+
+                                if let Ok(hex_string) = std::str::from_utf8(&bytes) {
+                                    final_value =
+                                        Cow::Owned(final_value.replace(encode, hex_string));
+                                }
+
+                                bytes.clear();
                             }
                         }
 
                         (key, final_value)
                     }
-                    None => ("", Cow::from(""))
+                    None => ("", Cow::from("")),
                 };
 
-                if decoded.0.chars().count() > 0 {
+                if !decoded.0.is_empty() {
                     key_value.push((decoded.0, decoded.1));
                 }
+
+                encodes.clear();
             }
 
-            return key_value
+            return key_value;
         }
 
         vec![]
