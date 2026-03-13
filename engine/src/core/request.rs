@@ -174,7 +174,7 @@ impl RequestPayload {
         }
     }
 
-    pub fn parse_query<'a>(&'a self) -> Vec<(&'a str, Cow<'a, str>)> {
+    fn parse_query<'a>(&'a self) -> Vec<(&'a str, Cow<'a, str>)> {
         if let Some(ref meta) = self.request_metadata {
             let mut key_value: Vec<(&str, Cow<str>)> = vec![];
             let mut encodes: Vec<&str> = vec![];
@@ -229,5 +229,13 @@ impl RequestPayload {
         }
 
         vec![]
+    }
+
+    pub fn get_query(&self, query: &str) -> Option<String> {
+        if let Some(ref occ) = self.parse_query().iter().find(|f| f.0 == query) {
+            return Some(occ.1.to_string());
+        }
+
+        None
     }
 }

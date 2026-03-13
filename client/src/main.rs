@@ -29,13 +29,22 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    app.route(":get/lastname", |_| async move {
-        let val = json!({ "lastname": "Campos" });
-        ResponsePayload::json(&val)
+    app.route(":get/lastname", |req| async move {
+        if let Some(value) = req.get_query("client") {
+            let val = json!({ "lastname": value });
+            return Ok(ResponsePayload::json(&val));
+        }
+
+        Err(MyCustomError {
+            message: "client not provided".to_string()
+        })
     });
 
     app.route(":get/custom_erro", handler_external);
-    app.route(":get/custom_erro_without_result", handler_external_no_result);
+    app.route(
+        ":get/custom_erro_without_result",
+        handler_external_no_result,
+    );
     app.route(":get/custom_success", custom_success);
 
     app.server("0.0.0.0:3434").await?;
@@ -49,7 +58,7 @@ struct MyCustomError {
 
 #[derive(Serialize)]
 struct Success {
-    message: String
+    message: String,
 }
 
 impl RpressErrorExt for MyCustomError {
@@ -72,6 +81,6 @@ async fn handler_external_no_result(_: RequestPayload) -> MyCustomError {
 
 async fn custom_success(_: RequestPayload) -> ResponsePayload {
     ResponsePayload::json(&Success {
-        message: "Hello world".to_string()
+        message: "Hello world".to_string(),
     })
-} 
+}

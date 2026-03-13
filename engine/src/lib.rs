@@ -74,8 +74,6 @@ impl Rpress {
 
                 if meta.method == *method {
                     req.set_params(params);
-                    req.parse_query();
-
                     match handler(req).await {
                         Ok(payload) => {
                             let _ = response
