@@ -315,6 +315,7 @@ Behavior:
 - Already compressed types (image/*, video/*, audio/*, zip, gzip) are skipped
 - SVG is compressed normally
 - `Content-Encoding` and `Vary: Accept-Encoding` are added automatically
+- **Compression runs inside `tokio::task::spawn_blocking`** — CPU-bound work (Brotli/Gzip encoding) never blocks the async event loop, even under high concurrency
 
 ## Rate Limiting
 
@@ -403,7 +404,8 @@ app.serve_static("/uploads", "/var/data/uploads");
 ```
 
 - Content-Type is detected by file extension
-- Path traversal is prevented with `canonicalize()`
+- Path traversal is prevented with `canonicalize()` — both the base directory and the requested path are resolved and compared before any read is performed
+- File reads use `tokio::fs::read` and path resolution uses `tokio::fs::canonicalize` — **no blocking syscalls on the event loop**
 - Supports: HTML, CSS, JS, JSON, images (PNG, JPG, GIF, SVG, WebP, ICO), fonts (WOFF, WOFF2, TTF), PDF, XML, videos (MP4, WebM)
 
 ## TLS (HTTPS)

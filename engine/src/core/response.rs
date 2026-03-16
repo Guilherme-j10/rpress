@@ -123,7 +123,20 @@ impl<'a, W: AsyncWriteExt + Unpin> Response<'a, W> {
             self.headers.push((key.clone(), value.clone()));
         }
 
-        let (final_body, encoding) = Self::compress_body(&body, accept_encoding, content_type);
+        // Compression is CPU-bound (Brotli/Gzip). Offload it to a blocking
+        // thread so the Tokio event loop is never stalled under load.
+        let (final_body, encoding) = if accept_encoding.is_some() {
+            let body_owned = body;
+            let accept_owned = accept_encoding.map(|s| s.to_string());
+            let ct_owned = content_type.to_string();
+            tokio::task::spawn_blocking(move || {
+                Self::compress_body(&body_owned, accept_owned.as_deref(), &ct_owned)
+            })
+            .await
+            .unwrap_or_else(|_| (Vec::new(), None))
+        } else {
+            (body, None)
+        };
         if let Some(enc) = encoding {
             self.write_headers(HeadersResponse::ContentEncoding, enc);
             self.headers.push(("Vary".into(), "Accept-Encoding".into()));

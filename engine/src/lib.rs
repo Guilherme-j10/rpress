@@ -389,9 +389,14 @@ impl Rpress {
                     continue;
                 }
 
-                let base = std::path::Path::new(dir).canonicalize().ok()?;
+                // Use tokio::fs::canonicalize (async) so path resolution does
+                // not block the event loop — std::fs::canonicalize is a
+                // blocking syscall (stat + readlink) on every request.
+                let base = tokio::fs::canonicalize(std::path::Path::new(dir))
+                    .await
+                    .ok()?;
                 let full = base.join(relative);
-                let canonical = match full.canonicalize() {
+                let canonical = match tokio::fs::canonicalize(&full).await {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
