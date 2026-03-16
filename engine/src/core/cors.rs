@@ -1,3 +1,4 @@
+/// CORS configuration builder for the Rpress server.
 pub struct RpressCors {
     pub(crate) allowed_origins: Vec<String>,
     pub(crate) allowed_methods: Vec<String>,
@@ -14,6 +15,7 @@ impl Default for RpressCors {
 }
 
 impl RpressCors {
+    /// Creates a new CORS configuration with permissive defaults (all origins, common methods/headers).
     pub fn new() -> Self {
         Self {
             allowed_origins: vec!["*".to_string()],
@@ -31,31 +33,37 @@ impl RpressCors {
         }
     }
 
+    /// Sets the allowed origins for CORS requests.
     pub fn set_origins(mut self, origins: Vec<&str>) -> Self {
         self.allowed_origins = origins.into_iter().map(String::from).collect();
         self
     }
 
+    /// Sets the allowed HTTP methods for CORS requests.
     pub fn set_methods(mut self, methods: Vec<&str>) -> Self {
         self.allowed_methods = methods.into_iter().map(String::from).collect();
         self
     }
 
+    /// Sets the allowed request headers for CORS.
     pub fn set_headers(mut self, headers: Vec<&str>) -> Self {
         self.allowed_headers = headers.into_iter().map(String::from).collect();
         self
     }
 
+    /// Sets headers that the browser is allowed to access from the response.
     pub fn set_expose_headers(mut self, headers: Vec<&str>) -> Self {
         self.expose_headers = headers.into_iter().map(String::from).collect();
         self
     }
 
+    /// Sets how long (in seconds) the browser should cache preflight results.
     pub fn set_max_age(mut self, seconds: u64) -> Self {
         self.max_age = Some(seconds);
         self
     }
 
+    /// Controls whether credentials (cookies, auth headers) are allowed in CORS requests.
     pub fn set_credentials(mut self, allow: bool) -> Self {
         self.allow_credentials = allow;
         self

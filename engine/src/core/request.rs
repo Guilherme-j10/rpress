@@ -203,7 +203,7 @@ impl Request {
             }
 
             let header_lines = &buffer[rq_bytes + 2..h_bytes];
-            let headers_str = String::from_utf8_lossy(header_lines).to_owned();
+            let headers_str = String::from_utf8_lossy(header_lines).into_owned();
             let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
             let mut content_length: usize = 0;
             let mut has_content_length = false;
@@ -280,13 +280,9 @@ impl Request {
             let mut cursor: usize = 0;
             let mut accumulator: Vec<u8> = vec![];
 
-            loop {
-                let relative_hex_end = match buffer[cursor..].windows(2).position(|p| p == b"\r\n")
-                {
-                    Some(pos) => pos,
-                    None => break,
-                };
-
+            while let Some(relative_hex_end) =
+                buffer[cursor..].windows(2).position(|p| p == b"\r\n")
+            {
                 let hex_line_start = cursor;
                 let hex_line_end = cursor + relative_hex_end;
 
@@ -344,12 +340,13 @@ impl Request {
         let mut i = 0;
 
         while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                    decoded_bytes.push(byte);
-                    i += 3;
-                    continue;
-                }
+            if bytes[i] == b'%'
+                && i + 2 < bytes.len()
+                && let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16)
+            {
+                decoded_bytes.push(byte);
+                i += 3;
+                continue;
             }
             decoded_bytes.push(bytes[i]);
             i += 1;
@@ -392,8 +389,7 @@ impl Request {
                             encode
                                 .split("%")
                                 .filter(|f| !f.is_empty())
-                                .map(|a| u8::from_str_radix(a, 16))
-                                .flatten(),
+                                .flat_map(|a| u8::from_str_radix(a, 16)),
                         );
 
                         if let Ok(hex_string) = std::str::from_utf8(&bytes) {
@@ -417,14 +413,17 @@ impl RequestPayload {
         self.params = params;
     }
 
+    /// Returns a route parameter value by name (e.g. `:id` in `/users/:id`).
     pub fn get_param(&self, key: &str) -> Option<&str> {
         self.params.get(key).map(|s| s.as_str())
     }
 
+    /// Returns a query string parameter value by name.
     pub fn get_query(&self, key: &str) -> Option<&str> {
         self.query.get(key).map(|s| s.as_str())
     }
 
+    /// Returns the decoded request URI path.
     pub fn uri(&self) -> &str {
         self.request_metadata
             .as_ref()
@@ -432,6 +431,7 @@ impl RequestPayload {
             .unwrap_or("")
     }
 
+    /// Returns the HTTP method (GET, POST, etc.).
     pub fn method(&self) -> &str {
         self.request_metadata
             .as_ref()
@@ -439,6 +439,7 @@ impl RequestPayload {
             .unwrap_or("")
     }
 
+    /// Returns a request header value by name (case-insensitive lookup).
     pub fn header(&self, key: &str) -> Option<&str> {
         self.request_metadata
             .as_ref()
@@ -446,14 +447,17 @@ impl RequestPayload {
             .map(|s| s.as_str())
     }
 
+    /// Returns the request body as a UTF-8 string slice.
     pub fn body_str(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.payload)
     }
 
+    /// Deserializes the request body from JSON into the given type.
     pub fn body_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         serde_json::from_slice(&self.payload)
     }
 
+    /// Parses the Cookie header and returns all cookies as a key-value map.
     pub fn cookies(&self) -> HashMap<String, String> {
         let mut cookies = HashMap::new();
         if let Some(cookie_header) = self.header("cookie") {
@@ -467,6 +471,7 @@ impl RequestPayload {
         cookies
     }
 
+    /// Collects the full request body, consuming either the buffered payload or the body stream.
     pub async fn collect_body(&mut self) -> Vec<u8> {
         if !self.payload.is_empty() {
             return std::mem::take(&mut self.payload);
@@ -481,6 +486,7 @@ impl RequestPayload {
         Vec::new()
     }
 
+    /// Takes the body stream receiver for incremental chunk processing.
     pub fn body_stream(&mut self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>> {
         self.body_receiver.take()
     }

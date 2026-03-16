@@ -1,7 +1,32 @@
+//! # Rpress
+//!
+//! A lightweight async HTTP/1.1 framework built on [tokio](https://tokio.rs).
+//!
+//! Rpress provides routing, middleware, request body streaming, response compression,
+//! CORS, rate limiting, and static file serving out of the box.
+//!
+//! # Quick Start
+//!
+//! ```no_run
+//! use rpress::{Rpress, RpressCors, RpressRoutes, RequestPayload, ResponsePayload};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let mut app = Rpress::new(None);
+//!     let mut routes = RpressRoutes::new();
+//!     routes.add(":get/hello", |_req: RequestPayload| async {
+//!         ResponsePayload::text("Hello, world!")
+//!     });
+//!     app.add_route_group(routes);
+//!     app.listen("0.0.0.0:3000").await
+//! }
+//! ```
+
 pub mod core;
 pub mod types;
 
 pub use core::cors::RpressCors;
+pub use core::error::RpressEngineError;
 pub use core::handler_response::{
     CookieBuilder, IntoRpressResult, ResponsePayload, RpressError, RpressErrorExt,
 };
@@ -23,6 +48,9 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{Duration, Instant, timeout};
 
+type RateLimitStore = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
+
+/// Async HTTP/1.1 server with routing, middleware, compression, and more.
 pub struct Rpress {
     routes_tree: Route,
     routes_group: Vec<Option<RpressRoutes>>,
@@ -34,12 +62,13 @@ pub struct Rpress {
     max_connections: usize,
     static_dirs: Vec<(String, String)>,
     rate_limit: Option<(u32, u64)>,
-    rate_limit_store: Option<Arc<Mutex<HashMap<String, (u32, Instant)>>>>,
+    rate_limit_store: Option<RateLimitStore>,
     compression_enabled: bool,
     stream_threshold: usize,
 }
 
 impl Rpress {
+    /// Creates a new Rpress instance with optional CORS configuration.
     pub fn new(cors: Option<RpressCors>) -> Self {
         Self {
             routes_tree: Route::new(),
@@ -58,22 +87,27 @@ impl Rpress {
         }
     }
 
+    /// Sets the maximum buffer capacity per connection in bytes.
     pub fn set_buffer_capacity(&mut self, capacity: usize) {
         self.max_buffer_capacity = capacity;
     }
 
+    /// Sets the read timeout for incoming data on a connection.
     pub fn set_read_timeout(&mut self, duration: Duration) {
         self.read_timeout = duration;
     }
 
+    /// Sets the idle timeout before a keep-alive connection is closed.
     pub fn set_idle_timeout(&mut self, duration: Duration) {
         self.idle_timeout = duration;
     }
 
+    /// Sets the maximum number of concurrent connections.
     pub fn set_max_connections(&mut self, max: usize) {
         self.max_connections = max;
     }
 
+    /// Registers a global middleware that runs on every request.
     pub fn use_middleware<F, Fut>(&mut self, middleware: F)
     where
         F: Fn(RequestPayload, Next) -> Fut + Send + Sync + 'static,
@@ -83,23 +117,28 @@ impl Rpress {
             .push(Arc::new(move |req, next| Box::pin(middleware(req, next))));
     }
 
+    /// Adds a route group with its own routes and optional group-level middleware.
     pub fn add_route_group(&mut self, group: RpressRoutes) {
         self.routes_group.push(Some(group));
     }
 
+    /// Registers a directory for serving static files at the given URL prefix.
     pub fn serve_static(&mut self, url_prefix: &str, dir: &str) {
         let prefix = url_prefix.trim_end_matches('/').to_string();
         self.static_dirs.push((prefix, dir.to_string()));
     }
 
+    /// Enables IP-based rate limiting with the given max requests per time window.
     pub fn set_rate_limit(&mut self, max_requests: u32, window_secs: u64) {
         self.rate_limit = Some((max_requests, window_secs));
     }
 
+    /// Enables or disables automatic gzip/brotli response compression.
     pub fn enable_compression(&mut self, enabled: bool) {
         self.compression_enabled = enabled;
     }
 
+    /// Sets the body size threshold (in bytes) above which request bodies are streamed.
     pub fn set_stream_threshold(&mut self, bytes: usize) {
         self.stream_threshold = bytes;
     }
@@ -110,7 +149,7 @@ impl Rpress {
                 let group_middlewares: Vec<Middleware> = group.middlewares.drain(..).collect();
 
                 for (route, handler) in group.routes.iter_mut() {
-                    let look_for_method = match HTTP_METHOD_REG.captures(&route) {
+                    let look_for_method = match HTTP_METHOD_REG.captures(route) {
                         Some(method) => method,
                         None => {
                             tracing::error!("HTTP method not found in route: {}", route);
@@ -434,12 +473,12 @@ impl Rpress {
                         .await;
                 }
                 RouteMatch::NotFound => {
-                    if is_head || lookup_method == "GET" {
-                        if let Some(payload) = self.try_serve_static(meta.uri.as_str()).await {
-                            self.send_payload(payload, socket, origin_ref, is_head, &request_id, accept_enc_ref)
-                                .await;
-                            return;
-                        }
+                    if (is_head || lookup_method == "GET")
+                        && let Some(payload) = self.try_serve_static(meta.uri.as_str()).await
+                    {
+                        self.send_payload(payload, socket, origin_ref, is_head, &request_id, accept_enc_ref)
+                            .await;
+                        return;
                     }
                     self.send_error_status(StatusCode::NotFound, socket, origin_ref, &request_id)
                         .await;
@@ -448,6 +487,7 @@ impl Rpress {
         }
     }
 
+    /// Binds to the given address and starts accepting connections.
     pub async fn listen<T: Into<String>>(mut self, addr: T) -> anyhow::Result<()> {
         self.initialize_routes();
         if self.rate_limit.is_some() {
@@ -458,6 +498,7 @@ impl Rpress {
         Self::run_server(&arc_self, listener).await
     }
 
+    /// Starts the server using an existing `TcpListener`.
     pub async fn server_with_listener(
         mut self,
         listener: tokio::net::TcpListener,
@@ -636,12 +677,10 @@ impl Rpress {
 
                                                 if has_metadata {
                                                     current_requests.push(parsed);
-                                                } else if has_payload {
-                                                    if let Some(cr) =
-                                                        current_requests.last_mut()
-                                                    {
-                                                        cr.payload.extend(parsed.payload);
-                                                    }
+                                                } else if has_payload
+                                                    && let Some(cr) = current_requests.last_mut()
+                                                {
+                                                    cr.payload.extend(parsed.payload);
                                                 }
 
                                                 buffer.drain(..consumed);

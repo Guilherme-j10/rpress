@@ -126,7 +126,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "engine",
+ "rpress",
  "serde",
  "serde_json",
  "tokio",
@@ -147,24 +147,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "brotli",
- "chrono",
- "flate2",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -523,6 +505,24 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "rpress"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brotli",
+ "chrono",
+ "flate2",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "rustversion"

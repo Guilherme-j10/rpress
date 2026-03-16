@@ -9,6 +9,7 @@ pub static HTTP_METHOD_REG: LazyLock<Regex> =
 pub static PERCENT_ENCODING: LazyLock<Regex> = 
     LazyLock::new(|| Regex::new(r"(%F[0-7](?:%[89AB][0-9A-F]){3})|(%E[0-F](?:%[89AB][0-9A-F]){2})|(%C[23]%[89AB][0-9A-F])|(%[0-9A-F]{2})").unwrap());
 
+/// Result type alias for Rpress handler return values.
 pub type RpressResult<E = RpressError> = Result<ResponsePayload, E>;
 pub type Handler = Box<
     dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
@@ -28,6 +29,7 @@ pub type Middleware = Arc<
         + Sync,
 >;
 
+/// Macro to create a handler closure from a controller method.
 #[macro_export]
 macro_rules! handler {
     ($controller:ident, $method:ident) => {{
@@ -39,6 +41,7 @@ macro_rules! handler {
     }};
 }
 
+/// Parsed HTTP request metadata including method, URI, and headers.
 #[derive(Debug)]
 pub struct RequestMetadata {
     pub method: String,
@@ -49,6 +52,7 @@ pub struct RequestMetadata {
     pub headers: HashMap<String, String>,
 }
 
+/// Incoming HTTP request with metadata, body, route params, and query params.
 pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
@@ -59,25 +63,25 @@ pub struct RequestPayload {
 
 #[derive(Debug)]
 pub(crate) enum HttpVerbs {
-    GET,
-    POST,
-    DELETE,
-    PUT,
-    PATCH,
-    HEAD,
-    OPTIONS,
+    Get,
+    Post,
+    Delete,
+    Put,
+    Patch,
+    Head,
+    Options,
 }
 
 impl HttpVerbs {
     pub(crate) fn try_from_str(method: &str) -> Result<Self, crate::core::error::RpressEngineError> {
         match method {
-            "delete" => Ok(HttpVerbs::DELETE),
-            "patch" => Ok(HttpVerbs::PATCH),
-            "post" => Ok(HttpVerbs::POST),
-            "put" => Ok(HttpVerbs::PUT),
-            "get" => Ok(HttpVerbs::GET),
-            "head" => Ok(HttpVerbs::HEAD),
-            "options" => Ok(HttpVerbs::OPTIONS),
+            "delete" => Ok(HttpVerbs::Delete),
+            "patch" => Ok(HttpVerbs::Patch),
+            "post" => Ok(HttpVerbs::Post),
+            "put" => Ok(HttpVerbs::Put),
+            "get" => Ok(HttpVerbs::Get),
+            "head" => Ok(HttpVerbs::Head),
+            "options" => Ok(HttpVerbs::Options),
             _ => Err(crate::core::error::RpressEngineError::UnknownMethod(method.to_string())),
         }
     }
@@ -86,13 +90,13 @@ impl HttpVerbs {
 impl From<HttpVerbs> for String {
     fn from(verb: HttpVerbs) -> String {
         match verb {
-            HttpVerbs::DELETE => String::from("DELETE"),
-            HttpVerbs::GET => String::from("GET"),
-            HttpVerbs::POST => String::from("POST"),
-            HttpVerbs::PUT => String::from("PUT"),
-            HttpVerbs::PATCH => String::from("PATCH"),
-            HttpVerbs::HEAD => String::from("HEAD"),
-            HttpVerbs::OPTIONS => String::from("OPTIONS"),
+            HttpVerbs::Delete => String::from("DELETE"),
+            HttpVerbs::Get => String::from("GET"),
+            HttpVerbs::Post => String::from("POST"),
+            HttpVerbs::Put => String::from("PUT"),
+            HttpVerbs::Patch => String::from("PATCH"),
+            HttpVerbs::Head => String::from("HEAD"),
+            HttpVerbs::Options => String::from("OPTIONS"),
         }
     }
 }
@@ -188,6 +192,8 @@ impl From<HeadersResponse> for String {
     }
 }
 
+/// HTTP status codes supported by Rpress.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum StatusCode {
     Continue = 100,

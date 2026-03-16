@@ -1,8 +1,8 @@
 mod helpers;
 
-use engine::core::handler_response::ResponsePayload;
-use engine::core::routes::RpressRoutes;
-use engine::types::definitions::{RequestPayload, StatusCode};
+use rpress::core::handler_response::ResponsePayload;
+use rpress::core::routes::RpressRoutes;
+use rpress::types::definitions::{RequestPayload, StatusCode};
 use helpers::{parse_response, send_raw_request, start_test_server};
 
 #[tokio::test]
@@ -76,7 +76,7 @@ async fn test_custom_headers() {
 
 #[tokio::test]
 async fn test_cors_headers_present() {
-    use engine::core::cors::RpressCors;
+    use rpress::core::cors::RpressCors;
 
     let cors = RpressCors::new()
         .set_origins(vec!["https://example.com"])
@@ -111,7 +111,7 @@ async fn test_cors_headers_present() {
 
 #[tokio::test]
 async fn test_cors_preflight_options() {
-    use engine::core::cors::RpressCors;
+    use rpress::core::cors::RpressCors;
 
     let cors = RpressCors::new()
         .set_origins(vec!["*"])
@@ -140,7 +140,7 @@ async fn test_cors_preflight_options() {
 
 #[tokio::test]
 async fn test_cors_wrong_origin_no_headers() {
-    use engine::core::cors::RpressCors;
+    use rpress::core::cors::RpressCors;
 
     let cors = RpressCors::new()
         .set_origins(vec!["https://allowed.com"]);

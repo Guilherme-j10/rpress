@@ -1,8 +1,8 @@
 mod helpers;
 
-use engine::core::handler_response::ResponsePayload;
-use engine::core::routes::RpressRoutes;
-use engine::types::definitions::{RequestPayload, StatusCode};
+use rpress::core::handler_response::ResponsePayload;
+use rpress::core::routes::RpressRoutes;
+use rpress::types::definitions::{RequestPayload, StatusCode};
 use helpers::{parse_response, send_raw_request, start_test_server};
 
 #[tokio::test]

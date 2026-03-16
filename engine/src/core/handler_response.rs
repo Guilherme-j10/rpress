@@ -4,6 +4,7 @@ fn sanitize_header_value(value: &str) -> String {
     value.chars().filter(|c| *c != '\r' && *c != '\n').collect()
 }
 
+/// HTTP response payload with status, body, content type, and headers.
 pub struct ResponsePayload {
     pub status: StatusCode,
     pub body: Vec<u8>,
@@ -12,6 +13,7 @@ pub struct ResponsePayload {
 }
 
 impl ResponsePayload {
+    /// Creates a plain text response with status 200.
     pub fn text<T: Into<String>>(content: T) -> Self {
         Self {
             status: StatusCode::OK,
@@ -21,6 +23,7 @@ impl ResponsePayload {
         }
     }
 
+    /// Creates an HTML response with status 200.
     pub fn html<T: Into<String>>(content: T) -> Self {
         Self {
             status: StatusCode::OK,
@@ -30,6 +33,7 @@ impl ResponsePayload {
         }
     }
 
+    /// Creates a JSON response by serializing the given data.
     pub fn json<T: serde::Serialize>(data: &T) -> Result<Self, serde_json::Error> {
         let body = serde_json::to_vec(data)?;
         Ok(Self {
@@ -40,6 +44,7 @@ impl ResponsePayload {
         })
     }
 
+    /// Creates a response from raw bytes with the given content type.
     pub fn bytes(data: Vec<u8>, content_type: &str) -> Self {
         Self {
             status: StatusCode::OK,
@@ -49,6 +54,7 @@ impl ResponsePayload {
         }
     }
 
+    /// Creates an empty response with status 204 No Content.
     pub fn empty() -> Self {
         Self {
             status: StatusCode::NoContent,
@@ -58,16 +64,19 @@ impl ResponsePayload {
         }
     }
 
+    /// Sets the HTTP status code for this response.
     pub fn with_status(mut self, status: StatusCode) -> Self {
         self.status = status;
         self
     }
 
+    /// Overrides the Content-Type header for this response.
     pub fn with_content_type(mut self, ct: impl Into<String>) -> Self {
         self.content_type = ct.into();
         self
     }
 
+    /// Appends a custom header to this response (CRLF injection is sanitized).
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((
             sanitize_header_value(&key.into()),
@@ -76,6 +85,7 @@ impl ResponsePayload {
         self
     }
 
+    /// Creates a redirect response to the given location with the specified status code.
     pub fn redirect(location: &str, status: StatusCode) -> Self {
         let safe_location: String = location
             .chars()
@@ -90,6 +100,7 @@ impl ResponsePayload {
         }
     }
 
+    /// Appends a Set-Cookie header built from the given [`CookieBuilder`].
     pub fn set_cookie(mut self, cookie: &CookieBuilder) -> Self {
         let mut parts = vec![format!("{}={}", cookie.name, cookie.value)];
 
@@ -118,6 +129,7 @@ impl ResponsePayload {
     }
 }
 
+/// Builder for constructing Set-Cookie headers with various attributes.
 pub struct CookieBuilder {
     pub name: String,
     pub value: String,
@@ -130,6 +142,7 @@ pub struct CookieBuilder {
 }
 
 impl CookieBuilder {
+    /// Creates a new cookie with the given name and value. Defaults to Path=/, SameSite=Lax, HttpOnly=true.
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -143,42 +156,52 @@ impl CookieBuilder {
         }
     }
 
+    /// Sets the cookie path attribute.
     pub fn path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
     }
 
+    /// Sets the cookie domain attribute.
     pub fn domain(mut self, domain: impl Into<String>) -> Self {
         self.domain = Some(domain.into());
         self
     }
 
+    /// Sets the cookie Max-Age in seconds.
     pub fn max_age(mut self, seconds: i64) -> Self {
         self.max_age = Some(seconds);
         self
     }
 
+    /// Sets the SameSite attribute (Strict, Lax, or None).
     pub fn same_site(mut self, same_site: impl Into<String>) -> Self {
         self.same_site = Some(same_site.into());
         self
     }
 
+    /// Controls whether the cookie is HttpOnly.
     pub fn http_only(mut self, http_only: bool) -> Self {
         self.http_only = http_only;
         self
     }
 
+    /// Controls whether the cookie requires HTTPS.
     pub fn secure(mut self, secure: bool) -> Self {
         self.secure = secure;
         self
     }
 }
 
+/// Trait for types that can be converted into an Rpress handler result.
 pub trait IntoRpressResult {
+    /// Converts this value into a `Result<ResponsePayload, RpressError>`.
     fn into_result(self) -> Result<ResponsePayload, RpressError>;
 }
 
+/// Trait for custom error types to provide status code and message for HTTP responses.
 pub trait RpressErrorExt {
+    /// Converts this error into a status code and message pair.
     fn into_rpress_error(self) -> (StatusCode, String);
 }
 
@@ -215,6 +238,7 @@ impl<E: RpressErrorExt> IntoRpressResult for Result<ResponsePayload, E> {
     }
 }
 
+/// Default error type for Rpress handlers, carrying an HTTP status and message.
 #[derive(Debug)]
 pub struct RpressError {
     pub status: StatusCode,

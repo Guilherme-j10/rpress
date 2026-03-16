@@ -1,10 +1,10 @@
 mod helpers;
 
 use std::io::Read;
-use engine::core::cors::RpressCors;
-use engine::core::handler_response::{CookieBuilder, ResponsePayload};
-use engine::core::routes::RpressRoutes;
-use engine::types::definitions::{RequestPayload, StatusCode};
+use rpress::core::cors::RpressCors;
+use rpress::core::handler_response::{CookieBuilder, ResponsePayload};
+use rpress::core::routes::RpressRoutes;
+use rpress::types::definitions::{RequestPayload, StatusCode};
 use helpers::{
     parse_response, send_raw_request, send_raw_request_bytes,
     split_http_response_bytes, start_test_server, start_test_server_custom,

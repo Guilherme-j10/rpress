@@ -1,7 +1,13 @@
 [package]
-name = "engine"
+name = "rpress"
 version = "0.1.0"
 edition = "2024"
+description = "Lightweight async HTTP/1.1 framework built on tokio with routing, middleware, streaming, compression, CORS and rate limiting"
+license = "MIT"
+repository = "https://github.com/guilhermecampos/rpress"
+keywords = ["http", "server", "async", "framework", "tokio"]
+categories = ["web-programming::http-server", "asynchronous"]
+readme = "../README.md"
 
 [dependencies]
 tokio = { workspace = true }

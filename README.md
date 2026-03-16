@@ -21,7 +21,7 @@ Framework HTTP/1.1 assíncrono em Rust, construído sobre `tokio`. Projetado par
 ## Quick Start
 
 ```rust
-use engine::{Rpress, RpressCors, RpressRoutes, RequestPayload, ResponsePayload};
+use rpress::{Rpress, RpressCors, RpressRoutes, RequestPayload, ResponsePayload};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -240,7 +240,7 @@ ResponsePayload::text("data")
 ### Cookies
 
 ```rust
-use engine::CookieBuilder;
+use rpress::CookieBuilder;
 
 let cookie = CookieBuilder::new("token", "abc123")
     .path("/")
@@ -361,7 +361,7 @@ app.listen("0.0.0.0:3000").await?;
 Para organizar handlers em structs com `Arc`:
 
 ```rust
-use engine::handler;
+use rpress::handler;
 
 pub struct UserController;
 
@@ -409,7 +409,7 @@ pub fn get_user_routes() -> RpressRoutes {
 Implemente `RpressErrorExt` para retornar erros com status codes customizados:
 
 ```rust
-use engine::{RpressErrorExt, StatusCode};
+use rpress::{RpressErrorExt, StatusCode};
 
 struct NotFoundError {
     resource: String,

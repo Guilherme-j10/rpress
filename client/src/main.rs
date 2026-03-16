@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use engine::{Rpress, RpressCors};
+use rpress::{Rpress, RpressCors};
 
 use crate::routes::examples::get_example_routes;
 use crate::routes::upload::get_upload_routes;

@@ -1,3 +1,5 @@
+/// Internal engine errors that can occur during request processing.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum RpressEngineError {
     #[error("Unknown HTTP method: {0}")]

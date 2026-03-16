@@ -67,10 +67,10 @@ impl Route {
         let current_segment = segments[0];
         let remaining = &segments[1..];
 
-        if let Some(child_node) = self.static_path.get(current_segment) {
-            if let Some(result) = child_node.match_recursive(remaining, params) {
-                return Some(result);
-            }
+        if let Some(child_node) = self.static_path.get(current_segment)
+            && let Some(result) = child_node.match_recursive(remaining, params)
+        {
+            return Some(result);
         }
 
         if let Some(ref dynamic_param) = self.dynamic_params {
@@ -95,8 +95,8 @@ impl Route {
         let current_segment = segments[0];
         let remaining = &segments[1..];
 
-        if current_segment.starts_with(":") {
-            let param_name = current_segment[1..].to_string();
+        if let Some(stripped) = current_segment.strip_prefix(':') {
+            let param_name = stripped.to_string();
 
             if self.dynamic_params.is_none() {
                 self.dynamic_params = Some(Box::new(DynamicParam {
@@ -112,13 +112,14 @@ impl Route {
             let next_node = self
                 .static_path
                 .entry(current_segment.to_string())
-                .or_insert_with(Route::new);
+                .or_default();
 
             next_node.recursive_insert(remaining, method, handler);
         }
     }
 }
 
+/// A route group that bundles related routes and optional group-level middleware.
 #[derive(Default)]
 pub struct RpressRoutes {
     pub(crate) routes: HashMap<String, Option<Handler>>,
@@ -126,6 +127,7 @@ pub struct RpressRoutes {
 }
 
 impl RpressRoutes {
+    /// Creates an empty route group.
     pub fn new() -> Self {
         Self {
             routes: HashMap::default(),
@@ -133,6 +135,7 @@ impl RpressRoutes {
         }
     }
 
+    /// Registers a middleware that applies only to routes in this group.
     pub fn use_middleware<F, Fut>(&mut self, middleware: F)
     where
         F: Fn(RequestPayload, Next) -> Fut + Send + Sync + 'static,
@@ -142,6 +145,7 @@ impl RpressRoutes {
             .push(Arc::new(move |req, next| Box::pin(middleware(req, next))));
     }
 
+    /// Adds a route handler. The name format is `:method/path` (e.g. `:get/users/:id`).
     pub fn add<T, F, Fut, R>(&mut self, name: T, handler: F)
     where
         T: Into<String>,
