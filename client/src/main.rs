@@ -1,12 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use rpress::{Rpress, RpressCors};
 
+use crate::db::DbPool;
 use crate::routes::examples::get_example_routes;
 use crate::routes::security::get_security_routes;
 use crate::routes::upload::get_upload_routes;
 use crate::routes::user::get_user_routes;
 
+mod db;
 mod routes;
 
 #[tokio::main]
@@ -63,7 +66,15 @@ async fn main() -> anyhow::Result<()> {
         result
     });
 
-    app.add_route_group(get_user_routes());
+    // Create the database pool once and wrap it in Arc.
+    // Every route group that needs DB access receives a clone of this Arc —
+    // cheap (just a reference-count increment) and safe across async tasks.
+    //
+    // With a real pool it would be something like:
+    //   let db = Arc::new(PgPool::connect(&std::env::var("DATABASE_URL")?).await?);
+    let db = Arc::new(DbPool::new());
+
+    app.add_route_group(get_user_routes(db.clone()));
     app.add_route_group(get_upload_routes());
     app.add_route_group(get_example_routes());
     app.add_route_group(get_security_routes());

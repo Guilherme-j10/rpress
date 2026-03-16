@@ -562,6 +562,133 @@ pub fn get_user_routes() -> RpressRoutes {
 }
 ```
 
+## State Management
+
+Shared state — database pools, config, caches, service clients — is passed into route groups as function parameters and stored inside controllers wrapped in `Arc`.
+
+### The pattern
+
+```
+main()
+  └── Arc::new(MyPool::new())   — created once
+        ├── .clone() → get_user_routes(db)
+        │       └── UserController { db }
+        │             └── self.db.query(…).await
+        └── .clone() → get_order_routes(db)
+                └── OrderController { db }
+```
+
+### Example — database pool
+
+```rust
+// db.rs — your database pool (e.g. sqlx::PgPool or a mock)
+pub struct DbPool { /* connection pool */ }
+
+impl DbPool {
+    pub async fn find_user(&self, id: u32) -> Option<User> { /* … */ }
+    pub async fn create_user(&self, name: String, email: String) -> User { /* … */ }
+}
+```
+
+```rust
+// routes/user.rs
+use std::sync::Arc;
+use rpress::{handler, RpressRoutes, RequestPayload, ResponsePayload, RpressError, StatusCode};
+use crate::db::DbPool;
+
+pub struct UserController {
+    db: Arc<DbPool>,   // shared, cloning Arc is O(1)
+}
+
+impl UserController {
+    pub fn new(db: Arc<DbPool>) -> Arc<Self> {
+        Arc::new(Self { db })
+    }
+
+    async fn get_user(&self, req: RequestPayload) -> Result<ResponsePayload, RpressError> {
+        let id: u32 = req.get_param("id")
+            .and_then(|v| v.parse().ok())
+            .ok_or(RpressError { status: StatusCode::BadRequest, message: "bad id".into() })?;
+
+        let user = self.db.find_user(id).await
+            .ok_or(RpressError { status: StatusCode::NotFound, message: "not found".into() })?;
+
+        Ok(ResponsePayload::json(&user)?)
+    }
+
+    async fn create_user(&self, mut req: RequestPayload) -> Result<ResponsePayload, RpressError> {
+        let body = req.collect_body().await;
+        let data: serde_json::Value = serde_json::from_slice(&body)?;
+
+        let user = self.db.create_user(
+            data["name"].as_str().unwrap_or("").to_string(),
+            data["email"].as_str().unwrap_or("").to_string(),
+        ).await;
+
+        Ok(ResponsePayload::json(&user)?.with_status(StatusCode::Created))
+    }
+}
+
+// The pool is injected here — route groups are plain functions.
+pub fn get_user_routes(db: Arc<DbPool>) -> RpressRoutes {
+    let controller = UserController::new(db);
+    let mut routes = RpressRoutes::new();
+
+    routes.add(":get/users/:id", handler!(controller, get_user));
+    routes.add(":post/users",    handler!(controller, create_user));
+
+    routes
+}
+```
+
+```rust
+// main.rs — create the pool once, share it via Arc::clone
+use std::sync::Arc;
+use rpress::Rpress;
+use crate::db::DbPool;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // With sqlx: let db = Arc::new(PgPool::connect(&database_url).await?);
+    let db = Arc::new(DbPool::new());
+
+    let mut app = Rpress::new(None);
+
+    // Each route group gets a cheap Arc clone — no data is copied.
+    app.add_route_group(get_user_routes(db.clone()));
+    app.add_route_group(get_order_routes(db.clone()));
+
+    app.listen("0.0.0.0:3000").await?;
+    Ok(())
+}
+```
+
+### Multiple state types
+
+Pass additional state the same way — just add more parameters:
+
+```rust
+pub fn get_auth_routes(
+    db:    Arc<DbPool>,
+    cache: Arc<RedisClient>,
+    cfg:   Arc<AppConfig>,
+) -> RpressRoutes {
+    let controller = AuthController::new(db, cache, cfg);
+    // …
+}
+```
+
+```rust
+// main.rs
+let db    = Arc::new(DbPool::new());
+let cache = Arc::new(RedisClient::connect("redis://localhost")?);
+let cfg   = Arc::new(AppConfig::from_env());
+
+app.add_route_group(get_auth_routes(db.clone(), cache.clone(), cfg.clone()));
+```
+
+Any type that is `Send + Sync + 'static` can be wrapped in `Arc` and shared this way, including `tokio::sync::RwLock` and `tokio::sync::Mutex` for mutable shared state.
+
 ## Custom Errors
 
 Implement `RpressErrorExt` to return errors with custom status codes:
