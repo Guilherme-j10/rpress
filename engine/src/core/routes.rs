@@ -1,8 +1,9 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::{
     core::handler_response::IntoRpressResult,
-    types::definitions::{Handler, RequestPayload},
+    types::definitions::{Handler, Middleware, Next, RequestPayload, RpressResult},
 };
 
 struct DynamicParam {
@@ -10,12 +11,19 @@ struct DynamicParam {
     route: Route,
 }
 
+pub(crate) type ArcHandler = Arc<Handler>;
+
+pub(crate) enum RouteMatch {
+    Found(ArcHandler, HashMap<String, String>),
+    WrongMethod,
+    NotFound,
+}
+
 #[derive(Default)]
 pub(crate) struct Route {
     static_path: HashMap<String, Route>,
     dynamic_params: Option<Box<DynamicParam>>,
-    pub(crate) method: Option<String>,
-    pub(crate) handler: Option<Handler>,
+    handlers: HashMap<String, ArcHandler>,
 }
 
 impl Route {
@@ -23,30 +31,37 @@ impl Route {
         Route::default()
     }
 
-    pub(crate) fn find(&self, path: &str) -> Option<(&Handler, &String, HashMap<String, String>)> {
-        let segments: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
+    pub(crate) fn find(&self, path: &str, method: &str) -> RouteMatch {
+        let segments: Vec<&str> = path
+            .split("/")
+            .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+            .collect();
         let mut params = HashMap::new();
 
-        self.match_recursive(&segments, &mut params)
-            .map(|result| return (result.0.unwrap(), result.1.unwrap(), params))
+        match self.match_recursive(&segments, &mut params) {
+            Some(node) if node.handlers.contains_key(method) => {
+                RouteMatch::Found(node.handlers.get(method).unwrap().clone(), params)
+            }
+            Some(_) => RouteMatch::WrongMethod,
+            None => RouteMatch::NotFound,
+        }
     }
 
-    pub(crate) fn insert_route(&mut self, path: &str, method: &str, handler: Handler) -> () {
+    pub(crate) fn insert_route(&mut self, path: &str, method: &str, handler: Handler) {
         let segments: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
-        self.recursive_insert(&segments, method, handler);
+        self.recursive_insert(&segments, method, Arc::new(handler));
     }
 
     fn match_recursive<'a>(
         &'a self,
         segments: &[&str],
         params: &mut HashMap<String, String>,
-    ) -> Option<(Option<&'a Handler>, Option<&'a String>)> {
+    ) -> Option<&'a Route> {
         if segments.is_empty() {
-            if self.handler.is_none() && self.method.is_none() {
+            if self.handlers.is_empty() {
                 return None;
-            } else {
-                return Some((self.handler.as_ref(), self.method.as_ref()));
             }
+            return Some(self);
         }
 
         let current_segment = segments[0];
@@ -60,17 +75,20 @@ impl Route {
 
         if let Some(ref dynamic_param) = self.dynamic_params {
             params.insert(dynamic_param.name.clone(), current_segment.to_string());
-
             return dynamic_param.route.match_recursive(remaining, params);
         }
 
         None
     }
 
-    fn recursive_insert(&mut self, segments: &[&str], method: &str, handler: Handler) -> () {
+    fn recursive_insert(
+        &mut self,
+        segments: &[&str],
+        method: &str,
+        handler: ArcHandler,
+    ) {
         if segments.is_empty() {
-            self.handler = Some(handler);
-            self.method = Some(method.to_string());
+            self.handlers.insert(method.to_string(), handler);
             return;
         }
 
@@ -84,14 +102,12 @@ impl Route {
                 self.dynamic_params = Some(Box::new(DynamicParam {
                     name: param_name,
                     route: Route::new(),
-                }))
+                }));
             }
 
-            self.dynamic_params
-                .as_mut()
-                .unwrap()
-                .route
-                .recursive_insert(remaining, method, handler);
+            if let Some(ref mut dp) = self.dynamic_params {
+                dp.route.recursive_insert(remaining, method, handler);
+            }
         } else {
             let next_node = self
                 .static_path
@@ -106,13 +122,24 @@ impl Route {
 #[derive(Default)]
 pub struct RpressRoutes {
     pub(crate) routes: HashMap<String, Option<Handler>>,
+    pub(crate) middlewares: Vec<Middleware>,
 }
 
 impl RpressRoutes {
     pub fn new() -> Self {
         Self {
             routes: HashMap::default(),
+            middlewares: Vec::new(),
         }
+    }
+
+    pub fn use_middleware<F, Fut>(&mut self, middleware: F)
+    where
+        F: Fn(RequestPayload, Next) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = RpressResult> + Send + 'static,
+    {
+        self.middlewares
+            .push(Arc::new(move |req, next| Box::pin(middleware(req, next))));
     }
 
     pub fn add<T, F, Fut, R>(&mut self, name: T, handler: F)

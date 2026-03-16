@@ -34,18 +34,21 @@ impl User {
     }
 
     async fn handler_test(&self, req: RequestPayload) -> Result<ResponsePayload, RpressError> {
-        let user = req.get_param("user").unwrap();
+        let user = req.get_param("user").ok_or_else(|| RpressError {
+            status: StatusCode::BadRequest,
+            message: "Missing 'user' param".to_string(),
+        })?;
 
         if user == "1" {
             return Ok(ResponsePayload::json(&json!({
                 "name": "Guilherme"
-            })));
+            }))?);
         }
 
         Err(RpressError {
             status: StatusCode::InternalServerError,
             message: json!({
-                "error": "firsrtname not found"
+                "error": "firstname not found"
             })
             .to_string(),
         })
@@ -67,12 +70,18 @@ impl User {
         ResponsePayload::json(&Success {
             message: "Hello world".to_string(),
         })
+        .unwrap_or_else(|_| ResponsePayload::text("Serialization error"))
     }
 }
 
 pub fn get_user_routes() -> RpressRoutes {
     let user_controller = User::new();
     let mut routes = RpressRoutes::new();
+
+    routes.use_middleware(|req, next| async move {
+        tracing::info!("[USER_GROUP] Middleware do grupo de rotas de usuário");
+        next(req).await
+    });
 
     routes.add(
         ":get/get_name/:user",
@@ -82,7 +91,9 @@ pub fn get_user_routes() -> RpressRoutes {
     routes.add(":get/lastname", |req| async move {
         if let Some(value) = req.get_query("client") {
             let val = json!({ "lastname": value });
-            return Ok(ResponsePayload::json(&val));
+            return ResponsePayload::json(&val).map_err(|e| MyCustomError {
+                message: e.to_string(),
+            });
         }
 
         Err(MyCustomError {

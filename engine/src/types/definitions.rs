@@ -1,4 +1,4 @@
-use std::{collections::HashMap, pin::Pin, sync::LazyLock};
+use std::{collections::HashMap, pin::Pin, sync::{Arc, LazyLock}};
 
 use regex::Regex;
 
@@ -12,6 +12,18 @@ pub static PERCENT_ENCODING: LazyLock<Regex> =
 pub type RpressResult<E = RpressError> = Result<ResponsePayload, E>;
 pub type Handler = Box<
     dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
+pub type Next = Arc<
+    dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
+pub type Middleware = Arc<
+    dyn Fn(RequestPayload, Next) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
         + Send
         + Sync,
 >;
@@ -31,17 +43,18 @@ macro_rules! handler {
 pub struct RequestMetadata {
     pub method: String,
     pub uri: String,
+    #[allow(dead_code)]
     pub(crate) query_path: String,
     pub http_method: String,
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug)]
 pub struct RequestPayload {
     pub request_metadata: Option<RequestMetadata>,
     pub payload: Vec<u8>,
     pub params: HashMap<String, String>,
-    pub query: HashMap<String, String>
+    pub query: HashMap<String, String>,
+    pub(crate) body_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
 }
 
 #[derive(Debug)]
@@ -51,17 +64,21 @@ pub(crate) enum HttpVerbs {
     DELETE,
     PUT,
     PATCH,
+    HEAD,
+    OPTIONS,
 }
 
-impl From<&str> for HttpVerbs {
-    fn from(method: &str) -> HttpVerbs {
+impl HttpVerbs {
+    pub(crate) fn try_from_str(method: &str) -> Result<Self, crate::core::error::RpressEngineError> {
         match method {
-            "delete" => HttpVerbs::DELETE,
-            "patch" => HttpVerbs::PATCH,
-            "post" => HttpVerbs::POST,
-            "put" => HttpVerbs::PUT,
-            "get" => HttpVerbs::GET,
-            &_ => panic!("Unknown http method: {}", method),
+            "delete" => Ok(HttpVerbs::DELETE),
+            "patch" => Ok(HttpVerbs::PATCH),
+            "post" => Ok(HttpVerbs::POST),
+            "put" => Ok(HttpVerbs::PUT),
+            "get" => Ok(HttpVerbs::GET),
+            "head" => Ok(HttpVerbs::HEAD),
+            "options" => Ok(HttpVerbs::OPTIONS),
+            _ => Err(crate::core::error::RpressEngineError::UnknownMethod(method.to_string())),
         }
     }
 }
@@ -74,10 +91,13 @@ impl From<HttpVerbs> for String {
             HttpVerbs::POST => String::from("POST"),
             HttpVerbs::PUT => String::from("PUT"),
             HttpVerbs::PATCH => String::from("PATCH"),
+            HttpVerbs::HEAD => String::from("HEAD"),
+            HttpVerbs::OPTIONS => String::from("OPTIONS"),
         }
     }
 }
 
+#[allow(dead_code)]
 pub(crate) enum HeadersResponse {
     Date,
     Content,
@@ -168,11 +188,11 @@ impl From<HeadersResponse> for String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum StatusCode {
     Continue = 100,
     SwitchingProtocols = 101,
-    Ok = 200,
+    OK = 200,
     Created = 201,
     Accepted = 202,
     NonAuthoritativeInformation = 203,
@@ -181,6 +201,12 @@ pub enum StatusCode {
     PartialContent = 206,
     MultiStatus = 207,
     AlreadyReported = 208,
+    MovedPermanently = 301,
+    Found = 302,
+    SeeOther = 303,
+    NotModified = 304,
+    TemporaryRedirect = 307,
+    PermanentRedirect = 308,
     BadRequest = 400,
     Unauthorized = 401,
     Forbidden = 403,
@@ -232,7 +258,7 @@ impl From<&StatusCode> for String {
         match status {
             StatusCode::Continue => String::from("Continue"),
             StatusCode::SwitchingProtocols => String::from("Switching Protocols"),
-            StatusCode::Ok => String::from("Ok"),
+            StatusCode::OK => String::from("OK"),
             StatusCode::Created => String::from("Created"),
             StatusCode::Accepted => String::from("Accepted"),
             StatusCode::NonAuthoritativeInformation => {
@@ -243,6 +269,12 @@ impl From<&StatusCode> for String {
             StatusCode::PartialContent => String::from("Partial Content"),
             StatusCode::MultiStatus => String::from("Multi-Status"),
             StatusCode::AlreadyReported => String::from("Already Reported"),
+            StatusCode::MovedPermanently => String::from("Moved Permanently"),
+            StatusCode::Found => String::from("Found"),
+            StatusCode::SeeOther => String::from("See Other"),
+            StatusCode::NotModified => String::from("Not Modified"),
+            StatusCode::TemporaryRedirect => String::from("Temporary Redirect"),
+            StatusCode::PermanentRedirect => String::from("Permanent Redirect"),
             StatusCode::BadRequest => String::from("Bad Request"),
             StatusCode::Unauthorized => String::from("Unauthorized"),
             StatusCode::Forbidden => String::from("Forbidden"),

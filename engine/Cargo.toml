@@ -8,6 +8,17 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio-util = { workspace = true }
+uuid = { workspace = true }
 regex = "1.12.3"
 chrono = "0.4.44"
-derive_builder = "0.20.2"
+flate2 = "1"
+brotli = "7"
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+flate2 = "1"
+brotli = "7"
