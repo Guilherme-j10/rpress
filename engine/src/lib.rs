@@ -1,12 +1,13 @@
+#![allow(dead_code)]
 pub mod core;
 pub mod types;
 
 use crate::{
     core::{
-        handler_response::{IntoRpressResult, RpressErrorExt},
+        handler_response::RpressErrorExt,
         request::Request,
         response::Response,
-        routes::Route,
+        routes::{Route, RpressRoutes},
     },
     types::definitions::{HTTP_METHOD_REG, HttpVerbs, RequestPayload, StatusCode},
 };
@@ -15,6 +16,7 @@ use tokio::io::AsyncReadExt;
 
 pub struct Rpress {
     routes_tree: Route,
+    pub routes_group: Vec<Option<RpressRoutes>>,
     pub max_buffer_capacity: usize,
 }
 
@@ -22,6 +24,7 @@ impl Rpress {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             routes_tree: Route::new(),
+            routes_group: Vec::default(),
             max_buffer_capacity: 40096,
         })
     }
@@ -32,30 +35,61 @@ impl Rpress {
         }
     }
 
-    // space can be (+) or (%20)
-    pub fn route<T, F, Fut, R>(self: &mut Arc<Self>, name: T, handler: F)
-    where
-        T: Into<String>,
-        R: IntoRpressResult + 'static,
-        F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = R> + Send + 'static,
-    {
+    // fn route<T, F, Fut, R>(self: &mut Arc<Self>, name: T, handler: F)
+    // where
+    //     T: Into<String>,
+    //     R: IntoRpressResult + 'static,
+    //     F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
+    //     Fut: Future<Output = R> + Send + 'static,
+    // {
+    //     if let Some(rpress) = Arc::get_mut(self) {
+    //         let route = name.into();
+    //         let look_for_method = match HTTP_METHOD_REG.captures(&route) {
+    //             Some(method) => method,
+    //             None => panic!("HTTP method ot found"),
+    //         };
+
+    //         rpress.routes_tree.insert_route(
+    //             &look_for_method[2],
+    //             String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
+    //             Box::new(move |req| {
+    //                 let fut = handler(req);
+
+    //                 Box::pin(async move { fut.await.into_result() })
+    //             }),
+    //         );
+    //     }
+    // }
+
+    pub fn add_route_group(self: &mut Arc<Self>, group: RpressRoutes) -> () {
         if let Some(rpress) = Arc::get_mut(self) {
-            let route = name.into();
-            let look_for_method = match HTTP_METHOD_REG.captures(&route) {
-                Some(method) => method,
-                None => panic!("HTTP method ot found"),
-            };
+            rpress.routes_group.push(Some(group));
+        }
+    }
 
-            rpress.routes_tree.insert_route(
-                &look_for_method[2],
-                String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
-                Box::new(move |req| {
-                    let fut = handler(req);
+    fn initialize_routes(self: &mut Arc<Self>) -> () {
+        if let Some(rpress) = Arc::get_mut(self) {
+            for route_group in rpress.routes_group.iter_mut() {
+                if let Some(mut group) = route_group.take() {
+                    for (route, handler) in group.routes.iter_mut() {
+                        let look_for_method = match HTTP_METHOD_REG.captures(&route) {
+                            Some(method) => method,
+                            None => panic!("HTTP method ot found"),
+                        };
 
-                    Box::pin(async move { fut.await.into_result() })
-                }),
-            );
+                        if let Some(handler) = handler.take() {
+                            rpress.routes_tree.insert_route(
+                                &look_for_method[2],
+                                String::from(HttpVerbs::from(
+                                    look_for_method[1].to_lowercase().as_str(),
+                                ))
+                                .as_str(),
+                                handler,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -108,7 +142,8 @@ impl Rpress {
         }
     }
 
-    pub async fn server<T: Into<String>>(self: Arc<Self>, listener: T) -> anyhow::Result<()> {
+    pub async fn server<T: Into<String>>(self: &mut Arc<Self>, listener: T) -> anyhow::Result<()> {
+        self.initialize_routes();
         let listener = tokio::net::TcpListener::bind(listener.into()).await?;
 
         loop {

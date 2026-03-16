@@ -16,11 +16,22 @@ pub type Handler = Box<
         + Sync,
 >;
 
+#[macro_export]
+macro_rules! handler {
+    ($controller:ident, $method:ident) => {{
+        let controller = std::sync::Arc::clone(&$controller);
+        move |req| {
+            let controller = std::sync::Arc::clone(&controller);
+            async move { controller.$method(req).await }
+        }
+    }};
+}
+
 #[derive(Debug)]
 pub struct RequestMetadata {
     pub method: String,
     pub uri: String,
-    pub query_path: String,
+    pub(crate) query_path: String,
     pub http_method: String,
     pub headers: HashMap<String, String>,
 }
@@ -34,7 +45,7 @@ pub struct RequestPayload {
 }
 
 #[derive(Debug)]
-pub enum HttpVerbs {
+pub(crate) enum HttpVerbs {
     GET,
     POST,
     DELETE,
@@ -46,6 +57,7 @@ impl From<&str> for HttpVerbs {
     fn from(method: &str) -> HttpVerbs {
         match method {
             "delete" => HttpVerbs::DELETE,
+            "patch" => HttpVerbs::PATCH,
             "post" => HttpVerbs::POST,
             "put" => HttpVerbs::PUT,
             "get" => HttpVerbs::GET,
@@ -66,7 +78,7 @@ impl From<HttpVerbs> for String {
     }
 }
 
-pub enum HeadersResponse {
+pub(crate) enum HeadersResponse {
     Date,
     Content,
     ContentLength,

@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
-use crate::types::definitions::Handler;
+use crate::{
+    core::handler_response::IntoRpressResult,
+    types::definitions::{Handler, RequestPayload},
+};
 
 struct DynamicParam {
     name: String,
@@ -8,19 +11,19 @@ struct DynamicParam {
 }
 
 #[derive(Default)]
-pub struct Route {
+pub(crate) struct Route {
     static_path: HashMap<String, Route>,
     dynamic_params: Option<Box<DynamicParam>>,
-    pub method: Option<String>,
-    pub handler: Option<Handler>,
+    pub(crate) method: Option<String>,
+    pub(crate) handler: Option<Handler>,
 }
 
 impl Route {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Route::default()
     }
 
-    pub fn find(&self, path: &str) -> Option<(&Handler, &String, HashMap<String, String>)> {
+    pub(crate) fn find(&self, path: &str) -> Option<(&Handler, &String, HashMap<String, String>)> {
         let segments: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
         let mut params = HashMap::new();
 
@@ -28,7 +31,7 @@ impl Route {
             .map(|result| return (result.0.unwrap(), result.1.unwrap(), params))
     }
 
-    pub fn insert_route(&mut self, path: &str, method: &str, handler: Handler) -> () {
+    pub(crate) fn insert_route(&mut self, path: &str, method: &str, handler: Handler) -> () {
         let segments: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
         self.recursive_insert(&segments, method, handler);
     }
@@ -97,5 +100,35 @@ impl Route {
 
             next_node.recursive_insert(remaining, method, handler);
         }
+    }
+}
+
+#[derive(Default)]
+pub struct RpressRoutes {
+    pub(crate) routes: HashMap<String, Option<Handler>>,
+}
+
+impl RpressRoutes {
+    pub fn new() -> Self {
+        Self {
+            routes: HashMap::default(),
+        }
+    }
+
+    pub fn add<T, F, Fut, R>(&mut self, name: T, handler: F)
+    where
+        T: Into<String>,
+        R: IntoRpressResult + 'static,
+        F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+    {
+        self.routes.insert(
+            name.into(),
+            Some(Box::new(move |req| {
+                let fut = handler(req);
+
+                Box::pin(async move { fut.await.into_result() })
+            })),
+        );
     }
 }

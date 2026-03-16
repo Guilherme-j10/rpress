@@ -1,14 +1,14 @@
 use std::{borrow::Cow, collections::HashMap};
 
 use crate::types::definitions::{PERCENT_ENCODING, RequestMetadata, RequestPayload};
-pub struct Request;
+pub(crate) struct Request;
 
 impl Request {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Request
     }
 
-    pub fn parse_http_protocol(
+    pub(crate) fn parse_http_protocol(
         &self,
         buffer: &[u8],
         is_chunk: bool,
@@ -163,7 +163,7 @@ impl Request {
 }
 
 impl RequestPayload {
-    pub fn set_params(&mut self, params: HashMap<String, String>) -> () {
+    pub(crate) fn set_params(&mut self, params: HashMap<String, String>) -> () {
         self.params = params;
     }
 

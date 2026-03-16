@@ -4,13 +4,13 @@ use crate::types::definitions::{HeadersResponse, StatusCode};
 use chrono::{DateTime, Utc};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-pub struct Response<'a> {
+pub(crate) struct Response<'a> {
     socket: &'a mut TcpStream,
     headers: HashMap<String, String>,
 }
 
 impl<'a> Response<'a> {
-    pub fn new(socket: &'a mut TcpStream) -> Self {
+    pub(crate) fn new(socket: &'a mut TcpStream) -> Self {
         Self {
             socket,
             headers: HashMap::default(),
@@ -45,7 +45,7 @@ impl<'a> Response<'a> {
         response_buffer
     }
 
-    pub async fn send_response(
+    pub(crate) async fn send_response(
         &mut self,
         status_code: StatusCode,
         body: Vec<u8>,

@@ -44,6 +44,16 @@ impl IntoRpressResult for ResponsePayload {
     }
 }
 
+impl IntoRpressResult for () {
+    fn into_result(self) -> Result<ResponsePayload, RpressError> {
+        Ok(ResponsePayload {
+            status: StatusCode::Accepted,
+            body: vec![],
+            content_type: "text/plain",
+        })
+    }
+}
+
 impl<E: RpressErrorExt> IntoRpressResult for E {
     fn into_result(self) -> Result<ResponsePayload, RpressError> {
         let (status, message) = self.into_rpress_error();
