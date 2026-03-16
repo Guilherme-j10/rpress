@@ -11,6 +11,21 @@ use engine::{
 use serde::Serialize;
 use serde_json::json;
 
+struct MyCustomError {
+    message: String,
+}
+
+#[derive(Serialize)]
+struct Success {
+    message: String,
+}
+
+impl RpressErrorExt for MyCustomError {
+    fn into_rpress_error(self) -> (StatusCode, String) {
+        (StatusCode::InternalServerError, self.message)
+    }
+}
+
 pub struct User;
 
 impl User {
@@ -89,19 +104,4 @@ pub fn get_user_routes() -> RpressRoutes {
     );
 
     routes
-}
-
-struct MyCustomError {
-    message: String,
-}
-
-#[derive(Serialize)]
-struct Success {
-    message: String,
-}
-
-impl RpressErrorExt for MyCustomError {
-    fn into_rpress_error(self) -> (StatusCode, String) {
-        (StatusCode::InternalServerError, self.message)
-    }
 }
