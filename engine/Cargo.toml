@@ -1,8 +1,8 @@
 [package]
 name = "rpress"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
-description = "Lightweight async HTTP/1.1 framework built on tokio with routing, middleware, streaming, compression, CORS and rate limiting"
+description = "Lightweight async HTTP/1.1 and HTTP/2 framework built on tokio with TLS (rustls), routing, middleware, streaming, compression, CORS and rate limiting"
 license = "MIT"
 repository = "https://github.com/guilhermecampos/rpress"
 keywords = ["http", "server", "async", "framework", "tokio"]
@@ -22,9 +22,20 @@ regex = "1.12.3"
 chrono = "0.4.44"
 flate2 = "1"
 brotli = "7"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+h2 = "0.4"
+http = "1"
+bytes = "1"
 
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
 flate2 = "1"
 brotli = "7"
+rcgen = "0.13"
+tokio-rustls = "0.26"
+rustls-pki-types = "1"
+h2 = "0.4"
+http = "1"

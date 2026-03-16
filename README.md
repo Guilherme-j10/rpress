@@ -1,15 +1,18 @@
 # Rpress
 
-An async HTTP/1.1 framework in Rust, built on top of `tokio`. Designed to be lightweight, secure, and production-ready.
+An async HTTP/1.1 and HTTP/2 framework in Rust, built on top of `tokio`. Designed to be lightweight, secure, and production-ready.
 
 ## Features
 
 - Trie-based routing (static, dynamic, multi-method)
 - Middleware (global and per route group)
+- **TLS nativo via rustls** (HTTPS com certificados PEM)
+- **HTTP/2 via h2** (negociação automática por ALPN sobre TLS)
 - Request body streaming via `mpsc::channel`
 - Automatic gzip/brotli compression
-- Native CORS with builder pattern
-- IP-based rate limiting
+- Native CORS with builder pattern and **fail-fast validation** (RFC compliance)
+- **Granular body size limits** (global and per route group)
+- **Pluggable rate limiting** via `RateLimiter` trait (in-memory or distributed backends like Redis)
 - Static file serving
 - Cookies (parsing and Set-Cookie builder)
 - Graceful shutdown
@@ -279,6 +282,24 @@ let mut app = Rpress::new(None);
 
 Automatic headers: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Vary: Origin`. Preflight `OPTIONS` requests are handled automatically.
 
+### CORS validation (fail-fast)
+
+Rpress enforces RFC-compliant CORS at startup. Using wildcard origin `"*"` with `set_credentials(true)` will **panic** immediately, preventing the application from starting with an insecure configuration that browsers would silently reject:
+
+```rust
+// This will panic at startup:
+let cors = RpressCors::new()
+    .set_origins(vec!["*"])
+    .set_credentials(true);
+let app = Rpress::new(Some(cors)); // panics!
+
+// Use explicit origins instead:
+let cors = RpressCors::new()
+    .set_origins(vec!["https://app.example.com"])
+    .set_credentials(true);
+let app = Rpress::new(Some(cors)); // ok
+```
+
 ## Compression
 
 Gzip and Brotli with automatic negotiation via `Accept-Encoding`:
@@ -297,13 +318,82 @@ Behavior:
 
 ## Rate Limiting
 
-Limit requests per IP using a token bucket:
+Limit requests per IP with a sliding window counter:
 
 ```rust
 app.set_rate_limit(100, 60); // 100 requests per 60 seconds
 ```
 
-When the limit is exceeded, returns `429 Too Many Requests`. Expired entries are automatically cleaned up when the store exceeds 10,000 records.
+When the limit is exceeded, returns `429 Too Many Requests`.
+
+By default, `set_rate_limit` uses an in-memory backend (`InMemoryRateLimiter`) suitable for single-instance deployments. Expired entries are automatically cleaned up when the store exceeds 10,000 records.
+
+### Distributed rate limiting
+
+For multi-instance environments (e.g. Kubernetes), inject a custom backend that implements the `RateLimiter` trait:
+
+```rust
+use rpress::RateLimiter;
+use std::pin::Pin;
+
+struct RedisRateLimiter { /* redis client */ }
+
+impl RateLimiter for RedisRateLimiter {
+    fn check(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        let key = key.to_string();
+        Box::pin(async move {
+            // Query Redis INCR + EXPIRE and return whether under limit
+            true
+        })
+    }
+}
+
+let mut app = Rpress::new(None);
+app.set_rate_limiter(RedisRateLimiter { /* ... */ });
+app.set_rate_limit(100, 60);
+```
+
+The `set_rate_limiter` call must come **before** `set_rate_limit`, or after it to replace the default in-memory limiter. The framework does **not** ship a Redis implementation -- it only provides the trait and the in-memory default.
+
+## Body Size Limits
+
+By default, Rpress rejects request bodies larger than 10 MB with `413 Payload Too Large`.
+
+### Global limit
+
+```rust
+app.set_max_body_size(5 * 1024 * 1024); // 5 MB for all routes
+```
+
+### Per route group limit
+
+Individual route groups can override the global limit. This allows a file upload group to accept large bodies while keeping the rest of the API tightly restricted:
+
+```rust
+let mut api_routes = RpressRoutes::new();
+api_routes.set_max_body_size(8 * 1024); // 8 KB for API routes
+api_routes.add(":post/login", |req: RequestPayload| async move {
+    ResponsePayload::text("ok")
+});
+
+let mut upload_routes = RpressRoutes::new();
+upload_routes.set_max_body_size(50 * 1024 * 1024); // 50 MB for uploads
+upload_routes.add(":post/upload", |mut req: RequestPayload| async move {
+    let body = req.collect_body().await;
+    ResponsePayload::text(format!("Received {} bytes", body.len()))
+});
+
+app.set_max_body_size(1024 * 1024); // 1 MB global default
+app.add_route_group(api_routes);
+app.add_route_group(upload_routes);
+```
+
+When a route group has its own limit, that limit takes precedence over the global one -- even if the group limit is larger. The global limit acts as the baseline for routes without a specific override.
 
 ## Static Files
 
@@ -316,10 +406,71 @@ app.serve_static("/uploads", "/var/data/uploads");
 - Path traversal is prevented with `canonicalize()`
 - Supports: HTML, CSS, JS, JSON, images (PNG, JPG, GIF, SVG, WebP, ICO), fonts (WOFF, WOFF2, TTF), PDF, XML, videos (MP4, WebM)
 
+## TLS (HTTPS)
+
+Rpress supports native TLS via `rustls`. Use `listen_tls` instead of `listen` to serve over HTTPS:
+
+```rust
+use rpress::{Rpress, RpressTlsConfig, RpressRoutes, RequestPayload, ResponsePayload};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let mut app = Rpress::new(None);
+
+    let mut routes = RpressRoutes::new();
+    routes.add(":get/hello", |_req: RequestPayload| async {
+        ResponsePayload::text("Hello, HTTPS!")
+    });
+    app.add_route_group(routes);
+
+    let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+    app.listen_tls("0.0.0.0:443", tls).await
+}
+```
+
+### `RpressTlsConfig`
+
+| Method | Description |
+|--------|-------------|
+| `from_pem(cert_path, key_path)` | Loads a PEM certificate chain and private key from files |
+| `from_config(rustls::ServerConfig)` | Uses an existing `rustls::ServerConfig` for full control |
+
+Both methods automatically configure ALPN to support HTTP/2 (`h2`) and HTTP/1.1.
+
+### Plaintext and TLS side by side
+
+The `listen()` method continues to work for plaintext HTTP. You can use either one depending on your environment:
+
+```rust
+// Development — plaintext
+app.listen("0.0.0.0:3000").await?;
+
+// Production — TLS
+let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+app.listen_tls("0.0.0.0:443", tls).await?;
+```
+
+## HTTP/2
+
+HTTP/2 is supported automatically over TLS connections. When a client negotiates the `h2` protocol via ALPN during the TLS handshake, Rpress routes the connection through its HTTP/2 handler.
+
+- All routes, middleware, CORS, and response features work identically over HTTP/2
+- No code changes required — the same `RpressRoutes` and handlers serve both protocols
+- HTTP/2 multiplexing is fully supported (concurrent streams on a single connection)
+- Plaintext connections (`listen()`) always use HTTP/1.1
+
+```rust
+// This handler serves both HTTP/1.1 and HTTP/2 clients transparently
+routes.add(":get/api/data", |_req: RequestPayload| async {
+    ResponsePayload::json(&serde_json::json!({"protocol": "auto"})).unwrap()
+});
+```
+
 ## Full Configuration
 
 ```rust
 use std::time::Duration;
+use rpress::{Rpress, RpressTlsConfig};
 
 let mut app = Rpress::new(Some(cors));
 
@@ -335,8 +486,13 @@ app.set_idle_timeout(Duration::from_secs(120));
 // Maximum concurrent connections (default: 1024)
 app.set_max_connections(2048);
 
-// Rate limiting
+// Global max body size (default: 10MB)
+app.set_max_body_size(5 * 1024 * 1024);
+
+// Rate limiting (in-memory by default)
 app.set_rate_limit(100, 60);
+// Or inject a custom backend:
+// app.set_rate_limiter(my_redis_limiter);
 
 // Body streaming threshold (default: 64KB)
 app.set_stream_threshold(64 * 1024);
@@ -351,8 +507,11 @@ app.serve_static("/assets", "./public");
 app.use_middleware(|req, next| async move { next(req).await });
 app.add_route_group(routes);
 
-// Start the server
-app.listen("0.0.0.0:3000").await?;
+// Start the server (choose one)
+app.listen("0.0.0.0:3000").await?;             // HTTP
+// or
+let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+app.listen_tls("0.0.0.0:443", tls).await?;     // HTTPS + HTTP/2
 ```
 
 ## Controllers with the `handler!` macro
@@ -462,7 +621,7 @@ The server responds to `SIGINT` (Ctrl+C):
 | Request line | 8 KB |
 | Headers (size) | 8 KB |
 | Headers (count) | 100 |
-| Body (Content-Length) | 10 MB |
+| Body (Content-Length) | Configurable per route group (default 10 MB) |
 | Individual chunk | 1 MB |
 | Connection buffer | Configurable (default 40 KB) |
 

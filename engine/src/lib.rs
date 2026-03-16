@@ -1,9 +1,11 @@
 //! # Rpress
 //!
-//! A lightweight async HTTP/1.1 framework built on [tokio](https://tokio.rs).
+//! A lightweight async HTTP/1.1 and HTTP/2 framework built on [tokio](https://tokio.rs).
 //!
 //! Rpress provides routing, middleware, request body streaming, response compression,
-//! CORS, rate limiting, and static file serving out of the box.
+//! CORS (with fail-fast RFC validation), pluggable rate limiting (via [`RateLimiter`] trait),
+//! granular body size limits (global and per route group), static file serving,
+//! native TLS (via rustls), and HTTP/2 (via h2 with automatic ALPN negotiation) out of the box.
 //!
 //! # Quick Start
 //!
@@ -21,6 +23,27 @@
 //!     app.listen("0.0.0.0:3000").await
 //! }
 //! ```
+//!
+//! # TLS (HTTPS) and HTTP/2
+//!
+//! Use [`RpressTlsConfig`] and [`Rpress::listen_tls`] to serve over HTTPS.
+//! HTTP/2 is negotiated automatically via ALPN when clients support it.
+//!
+//! ```no_run
+//! use rpress::{Rpress, RpressTlsConfig, RpressRoutes, RequestPayload, ResponsePayload};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let mut app = Rpress::new(None);
+//!     let mut routes = RpressRoutes::new();
+//!     routes.add(":get/hello", |_req: RequestPayload| async {
+//!         ResponsePayload::text("Hello, HTTPS!")
+//!     });
+//!     app.add_route_group(routes);
+//!     let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+//!     app.listen_tls("0.0.0.0:443", tls).await
+//! }
+//! ```
 
 pub mod core;
 pub mod types;
@@ -31,11 +54,13 @@ pub use core::handler_response::{
     CookieBuilder, IntoRpressResult, ResponsePayload, RpressError, RpressErrorExt,
 };
 pub use core::routes::RpressRoutes;
+pub use core::tls::RpressTlsConfig;
+pub use core::rate_limiter::{RateLimiter, InMemoryRateLimiter};
 pub use types::definitions::{RequestPayload, RpressResult, StatusCode};
 
 use crate::{
     core::{
-        request::Request,
+        request,
         response::Response,
         routes::{Route, RouteMatch},
     },
@@ -44,17 +69,25 @@ use crate::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{Duration, Instant, timeout};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, timeout};
 
-type RateLimitStore = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
+pub(crate) struct ResolvedResponse {
+    pub payload: ResponsePayload,
+    pub request_id: String,
+    pub is_head: bool,
+    pub accept_encoding: Option<String>,
+    pub req_origin: Option<String>,
+}
 
 /// Async HTTP/1.1 server with routing, middleware, compression, and more.
 pub struct Rpress {
     routes_tree: Route,
     routes_group: Vec<Option<RpressRoutes>>,
     max_buffer_capacity: usize,
+    max_body_size: usize,
+    max_parser_body_size: usize,
     middlewares: Vec<Middleware>,
     cors: Option<RpressCors>,
     read_timeout: Duration,
@@ -62,7 +95,7 @@ pub struct Rpress {
     max_connections: usize,
     static_dirs: Vec<(String, String)>,
     rate_limit: Option<(u32, u64)>,
-    rate_limit_store: Option<RateLimitStore>,
+    rate_limiter: Option<Arc<dyn RateLimiter>>,
     compression_enabled: bool,
     stream_threshold: usize,
 }
@@ -70,10 +103,16 @@ pub struct Rpress {
 impl Rpress {
     /// Creates a new Rpress instance with optional CORS configuration.
     pub fn new(cors: Option<RpressCors>) -> Self {
+        if let Some(ref c) = cors {
+            c.validate();
+        }
+
         Self {
             routes_tree: Route::new(),
             routes_group: Vec::default(),
             max_buffer_capacity: 40096,
+            max_body_size: request::DEFAULT_MAX_BODY_SIZE,
+            max_parser_body_size: request::DEFAULT_MAX_BODY_SIZE,
             middlewares: Vec::new(),
             cors,
             read_timeout: Duration::from_secs(30),
@@ -81,7 +120,7 @@ impl Rpress {
             max_connections: 1024,
             static_dirs: Vec::new(),
             rate_limit: None,
-            rate_limit_store: None,
+            rate_limiter: None,
             compression_enabled: false,
             stream_threshold: 64 * 1024,
         }
@@ -129,13 +168,32 @@ impl Rpress {
     }
 
     /// Enables IP-based rate limiting with the given max requests per time window.
+    ///
+    /// Uses an in-memory rate limiter by default. For distributed environments,
+    /// call [`set_rate_limiter`](Self::set_rate_limiter) first to inject a custom backend.
     pub fn set_rate_limit(&mut self, max_requests: u32, window_secs: u64) {
         self.rate_limit = Some((max_requests, window_secs));
+        if self.rate_limiter.is_none() {
+            self.rate_limiter = Some(Arc::new(InMemoryRateLimiter::new()));
+        }
+    }
+
+    /// Sets a custom rate limiter backend (e.g. Redis-backed for distributed deployments).
+    ///
+    /// Must be called **before** [`set_rate_limit`](Self::set_rate_limit) to take effect,
+    /// or after it to replace the default in-memory limiter.
+    pub fn set_rate_limiter(&mut self, limiter: impl RateLimiter) {
+        self.rate_limiter = Some(Arc::new(limiter));
     }
 
     /// Enables or disables automatic gzip/brotli response compression.
     pub fn enable_compression(&mut self, enabled: bool) {
         self.compression_enabled = enabled;
+    }
+
+    /// Sets the global maximum request body size in bytes (default: 10MB).
+    pub fn set_max_body_size(&mut self, bytes: usize) {
+        self.max_body_size = bytes;
     }
 
     /// Sets the body size threshold (in bytes) above which request bodies are streamed.
@@ -144,9 +202,16 @@ impl Rpress {
     }
 
     fn initialize_routes(&mut self) {
+        let mut max_seen = self.max_body_size;
+
         for route_group in self.routes_group.iter_mut() {
             if let Some(mut group) = route_group.take() {
                 let group_middlewares: Vec<Middleware> = group.middlewares.drain(..).collect();
+                let group_body_limit = group.max_body_size;
+
+                if let Some(limit) = group_body_limit {
+                    max_seen = max_seen.max(limit);
+                }
 
                 for (route, handler) in group.routes.iter_mut() {
                     let look_for_method = match HTTP_METHOD_REG.captures(route) {
@@ -178,11 +243,14 @@ impl Rpress {
                             &look_for_method[2],
                             String::from(verb).as_str(),
                             final_handler,
+                            group_body_limit,
                         );
                     }
                 }
             }
         }
+
+        self.max_parser_body_size = max_seen;
     }
 
     fn wrap_handler_with_middlewares(handler: Handler, middlewares: &[Middleware]) -> Handler {
@@ -210,7 +278,7 @@ impl Rpress {
         })
     }
 
-    fn apply_cors_headers(&self, payload: &mut ResponsePayload, req_origin: Option<&str>) {
+    pub(crate) fn apply_cors_headers(&self, payload: &mut ResponsePayload, req_origin: Option<&str>) {
         if let Some(ref cors) = self.cors {
             payload.headers.retain(|(k, _)| !k.starts_with("Access-Control-") && k != "Vary");
             payload.headers.push(("Vary".into(), "Origin".into()));
@@ -271,7 +339,7 @@ impl Rpress {
             .and_then(|m| m.headers.get("accept-encoding").cloned())
     }
 
-    async fn send_payload<W: tokio::io::AsyncWriteExt + Unpin>(
+    async fn send_payload<W: AsyncWriteExt + Unpin>(
         &self,
         mut payload: ResponsePayload,
         socket: &mut W,
@@ -290,7 +358,7 @@ impl Rpress {
             .await;
     }
 
-    async fn send_error_status<W: tokio::io::AsyncWriteExt + Unpin>(
+    async fn send_error_status<W: AsyncWriteExt + Unpin>(
         &self,
         status: StatusCode,
         socket: &mut W,
@@ -366,136 +434,329 @@ impl Rpress {
     }
 
     async fn check_rate_limit(&self, addr: &SocketAddr) -> bool {
-        if let (Some((max_requests, window_secs)), Some(store)) =
-            (self.rate_limit, &self.rate_limit_store)
+        if let (Some((max_requests, window_secs)), Some(limiter)) =
+            (self.rate_limit, &self.rate_limiter)
         {
             let ip = addr.ip().to_string();
-            let now = Instant::now();
-            let window = Duration::from_secs(window_secs);
-
-            let mut map = store.lock().await;
-            let entry = map.entry(ip).or_insert((0, now));
-
-            if now.duration_since(entry.1) > window {
-                *entry = (1, now);
-                return true;
-            }
-
-            entry.0 += 1;
-            let allowed = entry.0 <= max_requests;
-
-            if map.len() > 10_000 {
-                map.retain(|_, (_, ts)| now.duration_since(*ts) <= window);
-            }
-
-            allowed
+            limiter.check(&ip, max_requests, window_secs).await
         } else {
             true
         }
     }
 
-    async fn dispatch_route<W: tokio::io::AsyncWriteExt + Unpin>(
+    pub(crate) async fn resolve_route(
         &self,
         mut req: RequestPayload,
-        socket: &mut W,
-    ) {
+    ) -> ResolvedResponse {
         let request_id = uuid::Uuid::new_v4().to_string();
-
         let accept_encoding = self.resolve_accept_encoding(&req);
-        let accept_enc_ref = accept_encoding.as_deref();
 
         let req_origin = req
             .request_metadata
             .as_ref()
             .and_then(|m| m.headers.get("origin").cloned());
-        let origin_ref = req_origin.as_deref();
 
-        if let Some(ref meta) = req.request_metadata {
-            if meta.method == "OPTIONS" && self.cors.is_some() {
-                self.send_error_status(StatusCode::NoContent, socket, origin_ref, &request_id)
-                    .await;
-                return;
+        let Some(ref meta) = req.request_metadata else {
+            return ResolvedResponse {
+                payload: ResponsePayload::empty().with_status(StatusCode::BadRequest),
+                request_id,
+                is_head: false,
+                accept_encoding,
+                req_origin,
+            };
+        };
+
+        if meta.method == "OPTIONS" && self.cors.is_some() {
+            return ResolvedResponse {
+                payload: ResponsePayload::empty().with_status(StatusCode::NoContent),
+                request_id,
+                is_head: false,
+                accept_encoding,
+                req_origin,
+            };
+        }
+
+        let is_head = meta.method == "HEAD";
+        let lookup_method = if is_head { "GET" } else { meta.method.as_str() };
+        let uri = meta.uri.clone();
+
+        let payload = match self.routes_tree.find(&uri, lookup_method) {
+            RouteMatch::Found(handler, params, route_body_limit) => {
+                let effective_limit = route_body_limit.unwrap_or(self.max_body_size);
+                if req.payload.len() > effective_limit {
+                    return ResolvedResponse {
+                        payload: ResponsePayload::empty().with_status(StatusCode::PayloadTooLarge),
+                        request_id,
+                        is_head,
+                        accept_encoding,
+                        req_origin,
+                    };
+                }
+
+                req.set_params(params);
+
+                let result = if self.middlewares.is_empty() {
+                    handler(req).await
+                } else {
+                    let final_next: Next = Arc::new(move |req| handler(req));
+
+                    let chain =
+                        self.middlewares
+                            .iter()
+                            .rev()
+                            .fold(final_next, |next, mw| {
+                                let mw = Arc::clone(mw);
+                                Arc::new(move |req| {
+                                    let mw = Arc::clone(&mw);
+                                    let next = Arc::clone(&next);
+                                    Box::pin(async move { mw(req, next).await })
+                                })
+                            });
+
+                    chain(req).await
+                };
+
+                match result {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        let (status, message) = error.into_rpress_error();
+                        ResponsePayload::text(message).with_status(status)
+                    }
+                }
+            }
+            RouteMatch::WrongMethod => {
+                ResponsePayload::empty().with_status(StatusCode::MethodNotAllowed)
+            }
+            RouteMatch::NotFound => {
+                if is_head || lookup_method == "GET" {
+                    if let Some(payload) = self.try_serve_static(&uri).await {
+                        payload
+                    } else {
+                        ResponsePayload::empty().with_status(StatusCode::NotFound)
+                    }
+                } else {
+                    ResponsePayload::empty().with_status(StatusCode::NotFound)
+                }
+            }
+        };
+
+        ResolvedResponse {
+            payload,
+            request_id,
+            is_head,
+            accept_encoding,
+            req_origin,
+        }
+    }
+
+    async fn dispatch_route<W: AsyncWriteExt + Unpin>(
+        &self,
+        req: RequestPayload,
+        socket: &mut W,
+    ) {
+        let resolved = self.resolve_route(req).await;
+        let origin_ref = resolved.req_origin.as_deref();
+        let accept_enc_ref = resolved.accept_encoding.as_deref();
+
+        self.send_payload(
+            resolved.payload,
+            socket,
+            origin_ref,
+            resolved.is_head,
+            &resolved.request_id,
+            accept_enc_ref,
+        )
+        .await;
+    }
+
+    async fn handle_h1_connection<S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static>(
+        self: &Arc<Self>,
+        mut socket: S,
+        addr: SocketAddr,
+    ) {
+        let mut buffer: Vec<u8> = Vec::with_capacity(4096);
+        let mut temp_buffer = [0; 1024];
+        let chunk_header = b"Transfer-Encoding: chunked";
+        let read_dur = self.read_timeout;
+        let idle_dur = self.idle_timeout;
+        let mut use_idle_timeout = true;
+
+        loop {
+            let dur = if use_idle_timeout { idle_dur } else { read_dur };
+
+            let n = match timeout(dur, socket.read(&mut temp_buffer)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
+                    tracing::error!("Socket read error: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    tracing::debug!("Connection timeout for {}", addr);
+                    let rid = uuid::Uuid::new_v4().to_string();
+                    self.send_error_status(
+                        StatusCode::RequestTimeout,
+                        &mut socket,
+                        None,
+                        &rid,
+                    ).await;
+                    break;
+                }
+            };
+
+            buffer.extend_from_slice(&temp_buffer[..n]);
+
+            if buffer.len() > self.max_buffer_capacity {
+                tracing::warn!("Buffer overflow for {}", addr);
+                let rid = uuid::Uuid::new_v4().to_string();
+                self.send_error_status(
+                    StatusCode::PayloadTooLarge,
+                    &mut socket,
+                    None,
+                    &rid,
+                ).await;
+                break;
             }
 
-            let is_head = meta.method == "HEAD";
-            let lookup_method = if is_head { "GET" } else { meta.method.as_str() };
+            let threshold = self.stream_threshold;
+            let should_stream = if threshold > 0 {
+                match request::parse_headers_only(&buffer, self.max_parser_body_size) {
+                    Ok(Some(ref h)) => !h.is_chunked && h.content_length > threshold,
+                    _ => false,
+                }
+            } else {
+                false
+            };
 
-            match self.routes_tree.find(meta.uri.as_str(), lookup_method) {
-                RouteMatch::Found(handler, params) => {
-                    req.set_params(params);
+            if should_stream {
+                let parsed = request::parse_headers_only(&buffer, self.max_parser_body_size).unwrap().unwrap();
+                let body_start = parsed.body_start;
+                let content_length = parsed.content_length;
+                let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
 
-                    let result = if self.middlewares.is_empty() {
-                        handler(req).await
-                    } else {
-                        let final_next: Next = Arc::new(move |req| handler(req));
+                let req = RequestPayload {
+                    request_metadata: Some(parsed.metadata),
+                    payload: Vec::new(),
+                    params: HashMap::default(),
+                    query: parsed.query,
+                    body_receiver: Some(rx),
+                };
 
-                        let chain =
-                            self.middlewares
-                                .iter()
-                                .rev()
-                                .fold(final_next, |next, mw| {
-                                    let mw = Arc::clone(mw);
-                                    Arc::new(move |req| {
-                                        let mw = Arc::clone(&mw);
-                                        let next = Arc::clone(&next);
-                                        Box::pin(async move { mw(req, next).await })
-                                    })
-                                });
+                let already_in_buffer = buffer.len().saturating_sub(body_start);
+                if already_in_buffer > 0 {
+                    let chunk = buffer[body_start..].to_vec();
+                    let _ = tx.send(chunk).await;
+                }
+                let mut remaining = content_length.saturating_sub(already_in_buffer);
+                buffer.clear();
 
-                        chain(req).await
-                    };
+                let (mut read_half, mut write_half) = tokio::io::split(socket);
 
-                    match result {
-                        Ok(payload) => {
-                            self.send_payload(payload, socket, origin_ref, is_head, &request_id, accept_enc_ref)
-                                .await;
+                let read_handle = tokio::spawn(async move {
+                    let mut tmp = [0u8; 4096];
+                    while remaining > 0 {
+                        match timeout(read_dur, read_half.read(&mut tmp)).await {
+                            Ok(Ok(0)) => break,
+                            Ok(Ok(n)) => {
+                                let take = n.min(remaining);
+                                if tx.send(tmp[..take].to_vec()).await.is_err() {
+                                    break;
+                                }
+                                remaining -= take;
+                            }
+                            Ok(Err(_)) | Err(_) => break,
                         }
-                        Err(error) => {
-                            let (status, message) = error.into_rpress_error();
-                            let mut payload = ResponsePayload::text(message).with_status(status);
-                            self.apply_cors_headers(&mut payload, origin_ref);
-                            payload.headers.push(("X-Request-ID".into(), request_id.clone()));
-                            let mut response = Response::new(socket);
+                    }
+                    drop(tx);
+                    read_half
+                });
+
+                self.dispatch_route(req, &mut write_half).await;
+
+                let read_half = read_handle.await.unwrap();
+                socket = read_half.unsplit(write_half);
+                use_idle_timeout = true;
+            } else {
+                let mut is_chunked = buffer
+                    .windows(chunk_header.len())
+                    .any(|b| b == chunk_header);
+
+                let mut current_requests: Vec<RequestPayload> = vec![];
+
+                loop {
+                    if buffer.is_empty() {
+                        break;
+                    }
+
+                    if !is_chunked {
+                        is_chunked = buffer
+                            .windows(chunk_header.len())
+                            .any(|b| b == chunk_header);
+                    }
+
+                    match request::parse_http_protocol(&buffer, is_chunked, self.max_parser_body_size) {
+                        Ok(Some((parsed, consumed))) => {
+                            let has_metadata =
+                                parsed.request_metadata.is_some();
+                            let has_payload = !parsed.payload.is_empty();
+
+                            if has_metadata {
+                                current_requests.push(parsed);
+                            } else if has_payload
+                                && let Some(cr) = current_requests.last_mut()
+                            {
+                                cr.payload.extend(parsed.payload);
+                            }
+
+                            buffer.drain(..consumed);
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            tracing::warn!("Parse error from {}: {}", addr, err);
+                            let rid = uuid::Uuid::new_v4().to_string();
+                            let status = if err.contains("exceeds maximum") {
+                                StatusCode::PayloadTooLarge
+                            } else {
+                                StatusCode::BadRequest
+                            };
+                            let mut payload = ResponsePayload::text(err)
+                                .with_status(status);
+                            self.apply_cors_headers(&mut payload, None);
+                            payload.headers.push(("X-Request-ID".into(), rid));
+                            let mut response = Response::new(&mut socket);
                             let _ = response
                                 .send_response(
                                     payload.status,
                                     payload.body,
                                     &payload.content_type,
                                     &payload.headers,
-                                    accept_enc_ref,
+                                    None,
                                 )
                                 .await;
+                            buffer.clear();
+                            break;
                         }
                     }
                 }
-                RouteMatch::WrongMethod => {
-                    self.send_error_status(StatusCode::MethodNotAllowed, socket, origin_ref, &request_id)
-                        .await;
-                }
-                RouteMatch::NotFound => {
-                    if (is_head || lookup_method == "GET")
-                        && let Some(payload) = self.try_serve_static(meta.uri.as_str()).await
-                    {
-                        self.send_payload(payload, socket, origin_ref, is_head, &request_id, accept_enc_ref)
-                            .await;
-                        return;
-                    }
-                    self.send_error_status(StatusCode::NotFound, socket, origin_ref, &request_id)
-                        .await;
+
+                use_idle_timeout = buffer.is_empty();
+                for req in current_requests {
+                    self.dispatch_route(req, &mut socket).await;
                 }
             }
         }
     }
 
+    fn prepare_server(&mut self) {
+        self.initialize_routes();
+    }
+
     /// Binds to the given address and starts accepting connections.
     pub async fn listen<T: Into<String>>(mut self, addr: T) -> anyhow::Result<()> {
-        self.initialize_routes();
-        if self.rate_limit.is_some() {
-            self.rate_limit_store = Some(Arc::new(Mutex::new(HashMap::new())));
-        }
+        self.prepare_server();
         let listener = tokio::net::TcpListener::bind(addr.into()).await?;
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener).await
+        Self::run_server(&arc_self, listener, None).await
     }
 
     /// Starts the server using an existing `TcpListener`.
@@ -503,19 +764,45 @@ impl Rpress {
         mut self,
         listener: tokio::net::TcpListener,
     ) -> anyhow::Result<()> {
-        self.initialize_routes();
-        if self.rate_limit.is_some() {
-            self.rate_limit_store = Some(Arc::new(Mutex::new(HashMap::new())));
-        }
+        self.prepare_server();
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener).await
+        Self::run_server(&arc_self, listener, None).await
     }
 
-    async fn run_server(arc_self: &Arc<Self>, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    /// Binds to the given address and starts accepting TLS connections.
+    pub async fn listen_tls<T: Into<String>>(
+        mut self,
+        addr: T,
+        tls_config: RpressTlsConfig,
+    ) -> anyhow::Result<()> {
+        self.prepare_server();
+        let listener = tokio::net::TcpListener::bind(addr.into()).await?;
+        let arc_self = Arc::new(self);
+        Self::run_server(&arc_self, listener, Some(tls_config.acceptor)).await
+    }
+
+    /// Starts the TLS server using an existing `TcpListener`.
+    pub async fn server_with_listener_tls(
+        mut self,
+        listener: tokio::net::TcpListener,
+        tls_config: RpressTlsConfig,
+    ) -> anyhow::Result<()> {
+        self.prepare_server();
+        let arc_self = Arc::new(self);
+        Self::run_server(&arc_self, listener, Some(tls_config.acceptor)).await
+    }
+
+    async fn run_server(
+        arc_self: &Arc<Self>,
+        listener: tokio::net::TcpListener,
+        tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    ) -> anyhow::Result<()> {
         let semaphore = Arc::new(Semaphore::new(arc_self.max_connections));
         let tracker = tokio_util::task::TaskTracker::new();
         let shutdown = tokio::signal::ctrl_c();
         tokio::pin!(shutdown);
+
+        let tls_acceptor = tls_acceptor.map(Arc::new);
 
         tracing::info!("Rpress server started");
 
@@ -543,180 +830,33 @@ impl Rpress {
                         continue;
                     }
 
-                    tracker.spawn({
-                        let thread_self = arc_self.clone();
+                    let server = arc_self.clone();
+                    let acceptor = tls_acceptor.clone();
 
-                        async move {
-                            let _permit = permit;
-                            let mut buffer: Vec<u8> = Vec::with_capacity(4096);
-                            let mut temp_buffer = [0; 1024];
-                            let chunk_header = b"Transfer-Encoding: chunked";
-                            let request = Request::new();
-                            let read_dur = thread_self.read_timeout;
-                            let idle_dur = thread_self.idle_timeout;
-                            let mut use_idle_timeout = true;
+                    tracker.spawn(async move {
+                        let _permit = permit;
 
-                            loop {
-                                let dur = if use_idle_timeout { idle_dur } else { read_dur };
+                        if let Some(acceptor) = acceptor {
+                            match acceptor.accept(socket).await {
+                                Ok(tls_stream) => {
+                                    let is_h2 = tls_stream
+                                        .get_ref()
+                                        .1
+                                        .alpn_protocol()
+                                        .is_some_and(|p| p == b"h2");
 
-                                let n = match timeout(dur, socket.read(&mut temp_buffer)).await {
-                                    Ok(Ok(0)) => break,
-                                    Ok(Ok(n)) => n,
-                                    Ok(Err(e)) => {
-                                        tracing::error!("Socket read error: {}", e);
-                                        break;
+                                    if is_h2 {
+                                        core::h2_handler::handle_h2_connection(&server, tls_stream, server.max_parser_body_size).await;
+                                    } else {
+                                        server.handle_h1_connection(tls_stream, addr).await;
                                     }
-                                    Err(_) => {
-                                        tracing::debug!("Connection timeout for {}", addr);
-                                        let rid = uuid::Uuid::new_v4().to_string();
-                                        thread_self.send_error_status(
-                                            StatusCode::RequestTimeout,
-                                            &mut socket,
-                                            None,
-                                            &rid,
-                                        ).await;
-                                        break;
-                                    }
-                                };
-
-                                buffer.extend_from_slice(&temp_buffer[..n]);
-
-                                if buffer.len() > thread_self.max_buffer_capacity {
-                                    tracing::warn!("Buffer overflow for {}", addr);
-                                    let rid = uuid::Uuid::new_v4().to_string();
-                                    thread_self.send_error_status(
-                                        StatusCode::PayloadTooLarge,
-                                        &mut socket,
-                                        None,
-                                        &rid,
-                                    ).await;
-                                    break;
                                 }
-
-                                let threshold = thread_self.stream_threshold;
-                                let should_stream = if threshold > 0 {
-                                    match request.parse_headers_only(&buffer) {
-                                        Ok(Some(ref h)) => !h.is_chunked && h.content_length > threshold,
-                                        _ => false,
-                                    }
-                                } else {
-                                    false
-                                };
-
-                                if should_stream {
-                                    let parsed = request.parse_headers_only(&buffer).unwrap().unwrap();
-                                    let body_start = parsed.body_start;
-                                    let content_length = parsed.content_length;
-                                    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
-
-                                    let req = RequestPayload {
-                                        request_metadata: Some(parsed.metadata),
-                                        payload: Vec::new(),
-                                        params: HashMap::default(),
-                                        query: parsed.query,
-                                        body_receiver: Some(rx),
-                                    };
-
-                                    let already_in_buffer = buffer.len().saturating_sub(body_start);
-                                    if already_in_buffer > 0 {
-                                        let chunk = buffer[body_start..].to_vec();
-                                        let _ = tx.send(chunk).await;
-                                    }
-                                    let mut remaining = content_length.saturating_sub(already_in_buffer);
-                                    buffer.clear();
-
-                                    let (mut read_half, mut write_half) = socket.into_split();
-
-                                    let read_handle = tokio::spawn(async move {
-                                        let mut tmp = [0u8; 4096];
-                                        while remaining > 0 {
-                                            match timeout(read_dur, read_half.read(&mut tmp)).await {
-                                                Ok(Ok(0)) => break,
-                                                Ok(Ok(n)) => {
-                                                    let take = n.min(remaining);
-                                                    if tx.send(tmp[..take].to_vec()).await.is_err() {
-                                                        break;
-                                                    }
-                                                    remaining -= take;
-                                                }
-                                                Ok(Err(_)) | Err(_) => break,
-                                            }
-                                        }
-                                        drop(tx);
-                                        read_half
-                                    });
-
-                                    thread_self.dispatch_route(req, &mut write_half).await;
-
-                                    let read_half = read_handle.await.unwrap();
-                                    socket = read_half.reunite(write_half).unwrap();
-                                    use_idle_timeout = true;
-                                } else {
-                                    let mut is_chunked = buffer
-                                        .windows(chunk_header.len())
-                                        .any(|b| b == chunk_header);
-
-                                    let mut current_requests: Vec<RequestPayload> = vec![];
-
-                                    loop {
-                                        if buffer.is_empty() {
-                                            break;
-                                        }
-
-                                        if !is_chunked {
-                                            is_chunked = buffer
-                                                .windows(chunk_header.len())
-                                                .any(|b| b == chunk_header);
-                                        }
-
-                                        match request.parse_http_protocol(&buffer, is_chunked) {
-                                            Ok(Some((parsed, consumed))) => {
-                                                let has_metadata =
-                                                    parsed.request_metadata.is_some();
-                                                let has_payload = !parsed.payload.is_empty();
-
-                                                if has_metadata {
-                                                    current_requests.push(parsed);
-                                                } else if has_payload
-                                                    && let Some(cr) = current_requests.last_mut()
-                                                {
-                                                    cr.payload.extend(parsed.payload);
-                                                }
-
-                                                buffer.drain(..consumed);
-                                            }
-                                            Ok(None) => break,
-                                            Err(err) => {
-                                                tracing::warn!("Parse error from {}: {}", addr, err);
-                                                let rid = uuid::Uuid::new_v4().to_string();
-                                                let mut payload = ResponsePayload::text(err)
-                                                    .with_status(StatusCode::BadRequest);
-                                                thread_self.apply_cors_headers(&mut payload, None);
-                                                payload.headers.push(("X-Request-ID".into(), rid));
-                                                let mut response = Response::new(&mut socket);
-                                                let _ = response
-                                                    .send_response(
-                                                        payload.status,
-                                                        payload.body,
-                                                        &payload.content_type,
-                                                        &payload.headers,
-                                                        None,
-                                                    )
-                                                    .await;
-                                                buffer.clear();
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    use_idle_timeout = buffer.is_empty();
-                                    for req in current_requests {
-                                        thread_self
-                                            .dispatch_route(req, &mut socket)
-                                            .await;
-                                    }
+                                Err(e) => {
+                                    tracing::debug!("TLS handshake failed for {}: {}", addr, e);
                                 }
                             }
+                        } else {
+                            server.handle_h1_connection(socket, addr).await;
                         }
                     });
                 }

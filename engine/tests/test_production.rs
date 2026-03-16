@@ -10,6 +10,19 @@ use helpers::{
     split_http_response_bytes, start_test_server, start_test_server_custom,
 };
 
+// CORS validation — wildcard origin + credentials must panic
+#[test]
+#[should_panic(expected = "CORS misconfiguration")]
+fn test_cors_wildcard_with_credentials_panics() {
+    use rpress::Rpress;
+
+    let cors = RpressCors::new()
+        .set_origins(vec!["*"])
+        .set_credentials(true);
+
+    let _app = Rpress::new(Some(cors));
+}
+
 // 4.1 — Multi-method same path
 #[tokio::test]
 async fn test_multi_method_same_path() {
@@ -49,7 +62,62 @@ async fn test_multi_method_same_path() {
     handle.abort();
 }
 
-// 4.2 — Rate limiting
+// Rate limiter — InMemoryRateLimiter unit test
+#[tokio::test]
+async fn test_in_memory_rate_limiter() {
+    use rpress::InMemoryRateLimiter;
+    use rpress::RateLimiter;
+
+    let limiter = InMemoryRateLimiter::new();
+
+    assert!(limiter.check("192.168.1.1", 3, 60).await);
+    assert!(limiter.check("192.168.1.1", 3, 60).await);
+    assert!(limiter.check("192.168.1.1", 3, 60).await);
+    assert!(!limiter.check("192.168.1.1", 3, 60).await);
+
+    assert!(limiter.check("192.168.1.2", 3, 60).await, "Different key should have its own counter");
+}
+
+// Rate limiter — custom mock limiter integration test
+#[tokio::test]
+async fn test_custom_rate_limiter_integration() {
+    use rpress::RateLimiter;
+    use std::pin::Pin;
+
+    struct AlwaysDenyLimiter;
+
+    impl RateLimiter for AlwaysDenyLimiter {
+        fn check(
+            &self,
+            _key: &str,
+            _max_requests: u32,
+            _window_secs: u64,
+        ) -> Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async { false })
+        }
+    }
+
+    let mut routes = RpressRoutes::new();
+    routes.add(":get/test", |_req: RequestPayload| async move {
+        ResponsePayload::text("ok")
+    });
+
+    let (addr, handle) = start_test_server_custom(None, routes, |app| {
+        app.set_rate_limiter(AlwaysDenyLimiter);
+        app.set_rate_limit(100, 60);
+    }).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /test HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    ).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 429, "AlwaysDenyLimiter should reject all requests");
+
+    handle.abort();
+}
+
+// 4.2 — Rate limiting (existing test with InMemoryRateLimiter)
 #[tokio::test]
 async fn test_rate_limiting() {
     let mut routes = RpressRoutes::new();
@@ -401,6 +469,105 @@ async fn test_nosniff_header() {
     let resp = parse_response(&raw);
     assert_eq!(resp.status_code, 200);
     assert_eq!(resp.get_header("X-Content-Type-Options"), Some("nosniff"));
+
+    handle.abort();
+}
+
+// --- Body Limit tests ---
+
+#[tokio::test]
+async fn test_route_body_limit_rejects_oversized() {
+    let mut routes = RpressRoutes::new();
+    routes.set_max_body_size(128);
+    routes.add(":post/limited", |req: RequestPayload| async move {
+        ResponsePayload::text(format!("got:{}", req.payload.len()))
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let body = "X".repeat(200);
+    let request = format!(
+        "POST /limited HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(), body
+    );
+
+    let raw = send_raw_request(&addr, &request).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 413, "Should reject body exceeding route limit");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_route_body_limit_accepts_within_limit() {
+    let mut routes = RpressRoutes::new();
+    routes.set_max_body_size(256);
+    routes.add(":post/limited", |req: RequestPayload| async move {
+        ResponsePayload::text(format!("got:{}", req.payload.len()))
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let body = "X".repeat(100);
+    let request = format!(
+        "POST /limited HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(), body
+    );
+
+    let raw = send_raw_request(&addr, &request).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "got:100");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_global_body_limit() {
+    let mut routes = RpressRoutes::new();
+    routes.add(":post/echo", |req: RequestPayload| async move {
+        ResponsePayload::text(format!("got:{}", req.payload.len()))
+    });
+
+    let (addr, handle) = start_test_server_custom(None, routes, |app| {
+        app.set_max_body_size(64);
+    }).await;
+
+    let body = "X".repeat(100);
+    let request = format!(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(), body
+    );
+
+    let raw = send_raw_request(&addr, &request).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 413, "Should reject body exceeding global limit");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_route_limit_overrides_global() {
+    let mut routes = RpressRoutes::new();
+    routes.set_max_body_size(256);
+    routes.add(":post/upload", |req: RequestPayload| async move {
+        ResponsePayload::text(format!("got:{}", req.payload.len()))
+    });
+
+    let (addr, handle) = start_test_server_custom(None, routes, |app| {
+        app.set_max_body_size(64);
+    }).await;
+
+    let body = "X".repeat(200);
+    let request = format!(
+        "POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(), body
+    );
+
+    let raw = send_raw_request(&addr, &request).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 200, "Route limit should override global limit");
+    assert_eq!(resp.body, "got:200");
 
     handle.abort();
 }

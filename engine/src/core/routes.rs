@@ -14,7 +14,7 @@ struct DynamicParam {
 pub(crate) type ArcHandler = Arc<Handler>;
 
 pub(crate) enum RouteMatch {
-    Found(ArcHandler, HashMap<String, String>),
+    Found(ArcHandler, HashMap<String, String>, Option<usize>),
     WrongMethod,
     NotFound,
 }
@@ -23,7 +23,7 @@ pub(crate) enum RouteMatch {
 pub(crate) struct Route {
     static_path: HashMap<String, Route>,
     dynamic_params: Option<Box<DynamicParam>>,
-    handlers: HashMap<String, ArcHandler>,
+    handlers: HashMap<String, (ArcHandler, Option<usize>)>,
 }
 
 impl Route {
@@ -40,16 +40,17 @@ impl Route {
 
         match self.match_recursive(&segments, &mut params) {
             Some(node) if node.handlers.contains_key(method) => {
-                RouteMatch::Found(node.handlers.get(method).unwrap().clone(), params)
+                let (handler, body_limit) = node.handlers.get(method).unwrap();
+                RouteMatch::Found(handler.clone(), params, *body_limit)
             }
             Some(_) => RouteMatch::WrongMethod,
             None => RouteMatch::NotFound,
         }
     }
 
-    pub(crate) fn insert_route(&mut self, path: &str, method: &str, handler: Handler) {
+    pub(crate) fn insert_route(&mut self, path: &str, method: &str, handler: Handler, max_body_size: Option<usize>) {
         let segments: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
-        self.recursive_insert(&segments, method, Arc::new(handler));
+        self.recursive_insert(&segments, method, Arc::new(handler), max_body_size);
     }
 
     fn match_recursive<'a>(
@@ -86,9 +87,10 @@ impl Route {
         segments: &[&str],
         method: &str,
         handler: ArcHandler,
+        max_body_size: Option<usize>,
     ) {
         if segments.is_empty() {
-            self.handlers.insert(method.to_string(), handler);
+            self.handlers.insert(method.to_string(), (handler, max_body_size));
             return;
         }
 
@@ -106,7 +108,7 @@ impl Route {
             }
 
             if let Some(ref mut dp) = self.dynamic_params {
-                dp.route.recursive_insert(remaining, method, handler);
+                dp.route.recursive_insert(remaining, method, handler, max_body_size);
             }
         } else {
             let next_node = self
@@ -114,7 +116,7 @@ impl Route {
                 .entry(current_segment.to_string())
                 .or_default();
 
-            next_node.recursive_insert(remaining, method, handler);
+            next_node.recursive_insert(remaining, method, handler, max_body_size);
         }
     }
 }
@@ -124,6 +126,7 @@ impl Route {
 pub struct RpressRoutes {
     pub(crate) routes: HashMap<String, Option<Handler>>,
     pub(crate) middlewares: Vec<Middleware>,
+    pub(crate) max_body_size: Option<usize>,
 }
 
 impl RpressRoutes {
@@ -132,7 +135,14 @@ impl RpressRoutes {
         Self {
             routes: HashMap::default(),
             middlewares: Vec::new(),
+            max_body_size: None,
         }
+    }
+
+    /// Sets the maximum request body size for all routes in this group.
+    /// Overrides the global limit set on `Rpress`.
+    pub fn set_max_body_size(&mut self, bytes: usize) {
+        self.max_body_size = Some(bytes);
     }
 
     /// Registers a middleware that applies only to routes in this group.

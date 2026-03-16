@@ -46,8 +46,20 @@ pub fn get_example_routes() -> RpressRoutes {
                 success: true,
                 data: json!({
                     "framework": "Rpress",
-                    "version": "1.0",
-                    "features": ["streaming", "compression", "cors"]
+                    "version": "0.2.0",
+                    "features": [
+                        "http1.1",
+                        "http2 (via TLS + ALPN)",
+                        "tls (rustls)",
+                        "streaming",
+                        "compression (gzip, brotli)",
+                        "cors (fail-fast RFC validation)",
+                        "rate-limiting (pluggable RateLimiter trait)",
+                        "body-size-limits (global + per route group)",
+                        "trie-routing",
+                        "middleware (global + group)",
+                        "graceful-shutdown",
+                    ]
                 }),
             })
             .unwrap()
@@ -231,6 +243,38 @@ pub fn get_example_routes() -> RpressRoutes {
         |_req: RequestPayload| async move {
             ResponsePayload::text("<data>xml content</data>")
                 .with_content_type("application/xml; charset=utf-8")
+        },
+    );
+
+    // GET /examples/security-info
+    // Shows the security configuration applied to this Rpress instance.
+    // Useful during development to confirm CORS, body limits, and rate
+    // limiting are wired up correctly.
+    routes.add(
+        ":get/examples/security-info",
+        |_req: RequestPayload| async move {
+            ResponsePayload::json(&json!({
+                "cors": {
+                    "allowed_origins": ["http://localhost:5173", "https://app.example.com"],
+                    "credentials": true,
+                    "note": "Wildcard '*' + credentials would panic at startup (RFC enforcement)."
+                },
+                "body_limits": {
+                    "global_bytes": 1 * 1024 * 1024,
+                    "global_human": "1 MB",
+                    "security_group_bytes": 8 * 1024,
+                    "security_group_human": "8 KB (login, verify-token)",
+                    "upload_group_bytes": 20 * 1024 * 1024,
+                    "upload_group_human": "20 MB (file uploads)"
+                },
+                "rate_limiting": {
+                    "backend": "InMemoryRateLimiter (local dev)",
+                    "max_requests": 100,
+                    "window_seconds": 60,
+                    "distributed_note": "Replace with set_rate_limiter(MyRedisLimiter::new(...)) for Kubernetes."
+                }
+            }))
+            .unwrap()
         },
     );
 

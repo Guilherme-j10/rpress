@@ -5,7 +5,7 @@ use crate::types::definitions::{PERCENT_ENCODING, RequestMetadata, RequestPayloa
 const MAX_REQUEST_LINE_SIZE: usize = 8192;
 const MAX_HEADER_SIZE: usize = 8192;
 const MAX_HEADERS_COUNT: usize = 100;
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
+pub(crate) const DEFAULT_MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
 const MAX_CHUNK_SIZE: usize = 1024 * 1024; // 1MB
 
 pub(crate) struct HeadersParseResult {
@@ -16,396 +16,305 @@ pub(crate) struct HeadersParseResult {
     pub body_start: usize,
 }
 
-pub(crate) struct Request;
+fn parse_head(buffer: &[u8], max_body_size: usize) -> Result<Option<HeadersParseResult>, &'static str> {
+    let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
 
-impl Request {
-    pub(crate) fn new() -> Self {
-        Request
-    }
-
-    pub(crate) fn parse_headers_only(
-        &self,
-        buffer: &[u8],
-    ) -> Result<Option<HeadersParseResult>, &'static str> {
-        let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
-
-        let rq_bytes = match rq_line {
-            Some(pos) if pos >= 3 => {
-                if pos > MAX_REQUEST_LINE_SIZE {
-                    return Err("Request line too long");
-                }
-                if !String::from_utf8_lossy(&buffer[..pos]).contains("HTTP/1.1") {
-                    return Err("Request line possibly malformed");
-                }
-                pos
+    let rq_bytes = match rq_line {
+        Some(pos) if pos >= 3 => {
+            if pos > MAX_REQUEST_LINE_SIZE {
+                return Err("Request line too long");
             }
-            Some(_) => return Err("Request line possibly malformed"),
-            None => return Ok(None),
-        };
-
-        let h_bytes = match buffer.windows(4).position(|b| b == b"\r\n\r\n") {
-            Some(val) => val,
-            None => return Ok(None),
-        };
-
-        let header_section_size = h_bytes
-            .checked_sub(rq_bytes + 2)
-            .ok_or("Malformed header section")?;
-        if header_section_size > MAX_HEADER_SIZE {
-            return Err("Headers too large");
-        }
-
-        let request_line = buffer[..rq_bytes]
-            .split(|&b| [b] == *b" ")
-            .map(|v| String::from_utf8_lossy(v).into_owned())
-            .collect::<Vec<String>>();
-
-        if request_line.len() < 3 {
-            return Err("Invalid request line size");
-        }
-
-        let header_lines = &buffer[rq_bytes + 2..h_bytes];
-        let headers_str = String::from_utf8_lossy(header_lines);
-        let mut header_map: HashMap<String, String> = HashMap::new();
-        let mut header_count: usize = 0;
-        let mut content_length: usize = 0;
-        let mut has_content_length = false;
-        let mut has_transfer_encoding = false;
-        let mut is_chunked = false;
-
-        for header in headers_str.split("\r\n") {
-            let (key, value) = match header.split_once(": ") {
-                Some((k, v)) => (k.to_lowercase(), v.to_string()),
-                None => continue,
-            };
-
-            header_count += 1;
-            if header_count > MAX_HEADERS_COUNT {
-                return Err("Too many headers");
-            }
-
-            if key == "content-length" {
-                content_length = value.parse().unwrap_or(0);
-                has_content_length = true;
-            }
-            if key == "transfer-encoding" {
-                has_transfer_encoding = true;
-                is_chunked = value.to_lowercase().contains("chunked");
-            }
-
-            header_map
-                .entry(key)
-                .and_modify(|existing| {
-                    existing.push_str(", ");
-                    existing.push_str(&value);
-                })
-                .or_insert(value);
-        }
-
-        if has_content_length && has_transfer_encoding {
-            return Err("Request contains both Content-Length and Transfer-Encoding");
-        }
-
-        if content_length > MAX_BODY_SIZE {
-            return Err("Content-Length exceeds maximum allowed size");
-        }
-
-        let raw_uri = &request_line[1];
-        let (raw_path, query_path) = match raw_uri.split_once("?") {
-            Some((path, qs)) => (path.to_string(), qs.to_string()),
-            None => (raw_uri.to_string(), String::new()),
-        };
-
-        let uri = Self::percent_decode(&raw_path);
-        let query = Self::parse_query_string(&query_path);
-
-        let metadata = RequestMetadata {
-            uri,
-            query_path,
-            method: request_line[0].clone(),
-            http_method: request_line[2].clone(),
-            headers: header_map,
-        };
-
-        Ok(Some(HeadersParseResult {
-            metadata,
-            query,
-            content_length,
-            is_chunked,
-            body_start: h_bytes + 4,
-        }))
-    }
-
-    pub(crate) fn parse_http_protocol(
-        &self,
-        buffer: &[u8],
-        is_chunk: bool,
-    ) -> Result<Option<(RequestPayload, usize)>, &'static str> {
-        let mut parse_only_chunk = false;
-        let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
-
-        let is_valid_request_line = match rq_line {
-            Some(pos) if pos >= 3 => {
-                if pos > MAX_REQUEST_LINE_SIZE {
-                    return Err("Request line too long");
-                }
-                String::from_utf8_lossy(&buffer[..pos]).contains("HTTP/1.1")
-            }
-            Some(_) => false,
-            None => false,
-        };
-
-        if !is_valid_request_line {
-            if is_chunk {
-                parse_only_chunk = true;
-            } else {
+            if !String::from_utf8_lossy(&buffer[..pos]).contains("HTTP/1.1") {
                 return Err("Request line possibly malformed");
             }
+            pos
+        }
+        Some(_) => return Err("Request line possibly malformed"),
+        None => return Ok(None),
+    };
+
+    let h_bytes = match buffer.windows(4).position(|b| b == b"\r\n\r\n") {
+        Some(val) => val,
+        None => return Ok(None),
+    };
+
+    let header_section_size = h_bytes
+        .checked_sub(rq_bytes + 2)
+        .ok_or("Malformed header section")?;
+    if header_section_size > MAX_HEADER_SIZE {
+        return Err("Headers too large");
+    }
+
+    let request_line = buffer[..rq_bytes]
+        .split(|&b| [b] == *b" ")
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+        .collect::<Vec<String>>();
+
+    if request_line.len() < 3 {
+        return Err("Invalid request line size");
+    }
+
+    let header_lines = &buffer[rq_bytes + 2..h_bytes];
+    let headers_str = String::from_utf8_lossy(header_lines);
+    let mut header_map: HashMap<String, String> = HashMap::new();
+    let mut header_count: usize = 0;
+    let mut content_length: usize = 0;
+    let mut has_content_length = false;
+    let mut has_transfer_encoding = false;
+    let mut is_chunked = false;
+
+    for header in headers_str.split("\r\n") {
+        let (key, value) = match header.split_once(": ") {
+            Some((k, v)) => (k.to_lowercase(), v.to_string()),
+            None => continue,
+        };
+
+        header_count += 1;
+        if header_count > MAX_HEADERS_COUNT {
+            return Err("Too many headers");
         }
 
-        let mut request_metadata: Option<RequestMetadata> = None;
-        let mut payload = vec![];
-        let total_consumed: usize;
-        let mut query: HashMap<String, String> = HashMap::default();
-
-        if !parse_only_chunk {
-            let rq_bytes = if let Some(request_bytes) = rq_line {
-                request_bytes
-            } else {
-                return Err("Request line not found");
-            };
-
-            let mut request_line = buffer[..rq_bytes]
-                .split(|&b| [b] == *b" ")
-                .collect::<Vec<&[u8]>>();
-
-            let request_line_content = request_line
-                .iter_mut()
-                .map(|v| String::from_utf8_lossy(v).into_owned())
-                .collect::<Vec<String>>();
-
-            if request_line_content.len() < 3 {
-                return Err("Invalid request line size");
-            }
-
-            let h_lines = buffer.windows(4).position(|b| b == b"\r\n\r\n");
-            let h_bytes = if let Some(val) = h_lines {
-                val
-            } else {
-                return Err("Invalid headers");
-            };
-
-            let header_section_size = h_bytes
-                .checked_sub(rq_bytes + 2)
-                .ok_or("Malformed header section")?;
-            if header_section_size > MAX_HEADER_SIZE {
-                return Err("Headers too large");
-            }
-
-            let header_lines = &buffer[rq_bytes + 2..h_bytes];
-            let headers_str = String::from_utf8_lossy(header_lines).into_owned();
-            let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
-            let mut content_length: usize = 0;
-            let mut has_content_length = false;
-            let mut has_transfer_encoding = false;
-
-            let mut header_map: HashMap<String, String> = HashMap::new();
-            let mut header_count: usize = 0;
-
-            for header in headers {
-                let (key, value) = match header.split_once(": ") {
-                    Some((k, v)) => (k.to_lowercase(), v.to_string()),
-                    None => continue,
-                };
-
-                header_count += 1;
-                if header_count > MAX_HEADERS_COUNT {
-                    return Err("Too many headers");
-                }
-
-                if key == "content-length" {
-                    content_length = value.parse().unwrap_or(0);
-                    has_content_length = true;
-                }
-
-                if key == "transfer-encoding" {
-                    has_transfer_encoding = true;
-                }
-
-                header_map
-                    .entry(key)
-                    .and_modify(|existing| {
-                        existing.push_str(", ");
-                        existing.push_str(&value);
-                    })
-                    .or_insert(value);
-            }
-
-            if has_content_length && has_transfer_encoding {
-                return Err("Request contains both Content-Length and Transfer-Encoding");
-            }
-
-            if content_length > MAX_BODY_SIZE {
-                return Err("Content-Length exceeds maximum allowed size");
-            }
-
-            let body_start = h_bytes + 4;
-            let body_end = body_start
-                .checked_add(content_length)
-                .ok_or("Content-Length overflow")?;
-
-            if buffer.len() < body_end {
-                return Ok(None);
-            }
-
-            let raw_uri = &request_line_content[1];
-            let (raw_path, query_path) = match raw_uri.split_once("?") {
-                Some((path, qs)) => (path.to_string(), qs.to_string()),
-                None => (raw_uri.to_string(), String::new()),
-            };
-
-            let uri = Self::percent_decode(&raw_path);
-            query = Self::parse_query_string(&query_path);
-
-            request_metadata = Some(RequestMetadata {
-                uri,
-                query_path,
-                method: request_line_content[0].clone(),
-                http_method: request_line_content[2].clone(),
-                headers: header_map,
-            });
-            payload = buffer[body_start..body_end].to_vec();
-            total_consumed = body_end;
-        } else {
-            let mut cursor: usize = 0;
-            let mut accumulator: Vec<u8> = vec![];
-
-            while let Some(relative_hex_end) =
-                buffer[cursor..].windows(2).position(|p| p == b"\r\n")
-            {
-                let hex_line_start = cursor;
-                let hex_line_end = cursor + relative_hex_end;
-
-                let hex_content_end = buffer[hex_line_start..hex_line_end]
-                    .iter()
-                    .position(|&b| b == b';')
-                    .map(|pos| hex_line_start + pos)
-                    .unwrap_or(hex_line_end);
-
-                let hex_str = String::from_utf8_lossy(&buffer[hex_line_start..hex_content_end]);
-                let decimal_size = match usize::from_str_radix(hex_str.trim(), 16) {
-                    Ok(size) if size <= MAX_CHUNK_SIZE => size,
-                    Ok(_) => return Err("Chunk size exceeds maximum"),
-                    Err(_) => break,
-                };
-
-                if decimal_size == 0 {
-                    cursor = hex_line_end.checked_add(4).ok_or("Chunk cursor overflow")?;
-                    break;
-                }
-
-                let data_start = hex_line_end.checked_add(2).ok_or("Chunk offset overflow")?;
-                let data_end = data_start
-                    .checked_add(decimal_size)
-                    .ok_or("Chunk data_end overflow")?;
-
-                let required_len = data_end.checked_add(2).ok_or("Chunk length overflow")?;
-                if buffer.len() < required_len {
-                    break;
-                }
-
-                accumulator.extend_from_slice(&buffer[data_start..data_end]);
-                cursor = data_end + 2;
-            }
-
-            total_consumed = cursor;
-            payload = accumulator;
+        if key == "content-length" {
+            content_length = value.parse().unwrap_or(0);
+            has_content_length = true;
+        }
+        if key == "transfer-encoding" {
+            has_transfer_encoding = true;
+            is_chunked = value.to_lowercase().contains("chunked");
         }
 
-        Ok(Some((
+        header_map
+            .entry(key)
+            .and_modify(|existing| {
+                existing.push_str(", ");
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
+
+    if has_content_length && has_transfer_encoding {
+        return Err("Request contains both Content-Length and Transfer-Encoding");
+    }
+
+    if content_length > max_body_size {
+        return Err("Content-Length exceeds maximum allowed size");
+    }
+
+    let raw_uri = &request_line[1];
+    let (raw_path, query_path) = match raw_uri.split_once("?") {
+        Some((path, qs)) => (path.to_string(), qs.to_string()),
+        None => (raw_uri.to_string(), String::new()),
+    };
+
+    let uri = percent_decode(&raw_path);
+    let query = parse_query_string(&query_path);
+
+    let metadata = RequestMetadata {
+        uri,
+        query_path,
+        method: request_line[0].clone(),
+        http_method: request_line[2].clone(),
+        headers: header_map,
+    };
+
+    Ok(Some(HeadersParseResult {
+        metadata,
+        query,
+        content_length,
+        is_chunked,
+        body_start: h_bytes + 4,
+    }))
+}
+
+fn parse_chunked_body(buffer: &[u8]) -> Result<Option<(Vec<u8>, usize)>, &'static str> {
+    let mut cursor: usize = 0;
+    let mut accumulator: Vec<u8> = vec![];
+
+    while let Some(relative_hex_end) =
+        buffer[cursor..].windows(2).position(|p| p == b"\r\n")
+    {
+        let hex_line_start = cursor;
+        let hex_line_end = cursor + relative_hex_end;
+
+        let hex_content_end = buffer[hex_line_start..hex_line_end]
+            .iter()
+            .position(|&b| b == b';')
+            .map(|pos| hex_line_start + pos)
+            .unwrap_or(hex_line_end);
+
+        let hex_str = String::from_utf8_lossy(&buffer[hex_line_start..hex_content_end]);
+        let decimal_size = match usize::from_str_radix(hex_str.trim(), 16) {
+            Ok(size) if size <= MAX_CHUNK_SIZE => size,
+            Ok(_) => return Err("Chunk size exceeds maximum"),
+            Err(_) => break,
+        };
+
+        if decimal_size == 0 {
+            cursor = hex_line_end.checked_add(4).ok_or("Chunk cursor overflow")?;
+            break;
+        }
+
+        let data_start = hex_line_end.checked_add(2).ok_or("Chunk offset overflow")?;
+        let data_end = data_start
+            .checked_add(decimal_size)
+            .ok_or("Chunk data_end overflow")?;
+
+        let required_len = data_end.checked_add(2).ok_or("Chunk length overflow")?;
+        if buffer.len() < required_len {
+            break;
+        }
+
+        accumulator.extend_from_slice(&buffer[data_start..data_end]);
+        cursor = data_end + 2;
+    }
+
+    Ok(Some((accumulator, cursor)))
+}
+
+pub(crate) fn parse_headers_only(
+    buffer: &[u8],
+    max_body_size: usize,
+) -> Result<Option<HeadersParseResult>, &'static str> {
+    parse_head(buffer, max_body_size)
+}
+
+pub(crate) fn parse_http_protocol(
+    buffer: &[u8],
+    is_chunk: bool,
+    max_body_size: usize,
+) -> Result<Option<(RequestPayload, usize)>, &'static str> {
+    let has_valid_request_line = match buffer.windows(2).position(|b| b == b"\r\n") {
+        Some(pos) if pos >= 3 => {
+            if pos > MAX_REQUEST_LINE_SIZE {
+                return Err("Request line too long");
+            }
+            String::from_utf8_lossy(&buffer[..pos]).contains("HTTP/1.1")
+        }
+        Some(_) => false,
+        None => false,
+    };
+
+    if !has_valid_request_line && !is_chunk {
+        return Err("Request line possibly malformed");
+    }
+
+    if !has_valid_request_line {
+        let (payload, consumed) = match parse_chunked_body(buffer)? {
+            Some(result) => result,
+            None => return Ok(None),
+        };
+
+        return Ok(Some((
             RequestPayload {
-                request_metadata,
+                request_metadata: None,
                 payload,
                 params: HashMap::default(),
-                query,
+                query: HashMap::default(),
                 body_receiver: None,
             },
-            total_consumed,
-        )))
+            consumed,
+        )));
     }
 
-    fn percent_decode(input: &str) -> String {
-        let bytes = input.as_bytes();
-        let mut decoded_bytes = Vec::with_capacity(bytes.len());
-        let mut i = 0;
+    let head = match parse_head(buffer, max_body_size)? {
+        Some(h) => h,
+        None => return Ok(None),
+    };
 
-        while i < bytes.len() {
-            if bytes[i] == b'%'
-                && i + 2 < bytes.len()
-                && let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16)
-            {
-                decoded_bytes.push(byte);
-                i += 3;
+    let body_end = head
+        .body_start
+        .checked_add(head.content_length)
+        .ok_or("Content-Length overflow")?;
+
+    if buffer.len() < body_end {
+        return Ok(None);
+    }
+
+    let payload = buffer[head.body_start..body_end].to_vec();
+
+    Ok(Some((
+        RequestPayload {
+            request_metadata: Some(head.metadata),
+            payload,
+            params: HashMap::default(),
+            query: head.query,
+            body_receiver: None,
+        },
+        body_end,
+    )))
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded_bytes = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16)
+        {
+            decoded_bytes.push(byte);
+            i += 3;
+            continue;
+        }
+        decoded_bytes.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&decoded_bytes).into_owned()
+}
+
+fn parse_query_string(query_path: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    if query_path.is_empty() {
+        return result;
+    }
+
+    for query in query_path.split("&") {
+        if let Some((key, raw_value)) = query.split_once("=") {
+            if key.is_empty() {
                 continue;
             }
-            decoded_bytes.push(bytes[i]);
-            i += 1;
-        }
 
-        String::from_utf8_lossy(&decoded_bytes).into_owned()
-    }
+            let raw_value = raw_value.replace('+', " ");
+            let mut final_value = raw_value.clone();
 
-    fn parse_query_string(query_path: &str) -> HashMap<String, String> {
-        let mut result = HashMap::new();
-        if query_path.is_empty() {
-            return result;
-        }
+            if raw_value.contains("%") {
+                let mut encodes: Vec<String> = vec![];
+                let mut bytes: Vec<u8> = vec![];
 
-        for query in query_path.split("&") {
-            if let Some((key, raw_value)) = query.split_once("=") {
-                if key.is_empty() {
-                    continue;
-                }
-
-                let raw_value = raw_value.replace('+', " ");
-                let mut final_value = raw_value.clone();
-
-                if raw_value.contains("%") {
-                    let mut encodes: Vec<String> = vec![];
-                    let mut bytes: Vec<u8> = vec![];
-
-                    for (_, [percent]) in PERCENT_ENCODING
-                        .captures_iter(&raw_value)
-                        .map(|c| c.extract::<1>())
-                    {
-                        let owned = percent.to_string();
-                        if !encodes.contains(&owned) {
-                            encodes.push(owned);
-                        }
-                    }
-
-                    for encode in encodes.iter() {
-                        bytes.extend(
-                            encode
-                                .split("%")
-                                .filter(|f| !f.is_empty())
-                                .flat_map(|a| u8::from_str_radix(a, 16)),
-                        );
-
-                        if let Ok(hex_string) = std::str::from_utf8(&bytes) {
-                            final_value = final_value.replace(encode.as_str(), hex_string);
-                        }
-
-                        bytes.clear();
+                for (_, [percent]) in PERCENT_ENCODING
+                    .captures_iter(&raw_value)
+                    .map(|c| c.extract::<1>())
+                {
+                    let owned = percent.to_string();
+                    if !encodes.contains(&owned) {
+                        encodes.push(owned);
                     }
                 }
 
-                result.insert(key.to_string(), final_value);
+                for encode in encodes.iter() {
+                    bytes.extend(
+                        encode
+                            .split("%")
+                            .filter(|f| !f.is_empty())
+                            .flat_map(|a| u8::from_str_radix(a, 16)),
+                    );
+
+                    if let Ok(hex_string) = std::str::from_utf8(&bytes) {
+                        final_value = final_value.replace(encode.as_str(), hex_string);
+                    }
+
+                    bytes.clear();
+                }
             }
-        }
 
-        result
+            result.insert(key.to_string(), final_value);
+        }
     }
+
+    result
 }
 
 impl RequestPayload {

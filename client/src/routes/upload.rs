@@ -86,6 +86,12 @@ pub fn get_upload_routes() -> RpressRoutes {
     let controller = UploadController::new();
     let mut routes = RpressRoutes::new();
 
+    // Override the global 1 MB limit for this group: uploads can be up to 20 MB.
+    // The framework picks the highest limit across all groups when deciding how
+    // much data to accept at the parser stage, then enforces the group limit
+    // precisely before the handler is invoked.
+    routes.set_max_body_size(20 * 1024 * 1024); // 20 MB
+
     routes.use_middleware(|req, next| async move {
         tracing::info!("[UPLOAD] {} {}", req.method(), req.uri());
         next(req).await

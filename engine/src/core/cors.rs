@@ -68,4 +68,14 @@ impl RpressCors {
         self.allow_credentials = allow;
         self
     }
+
+    pub(crate) fn validate(&self) {
+        if self.allow_credentials && self.allowed_origins.iter().any(|o| o == "*") {
+            panic!(
+                "CORS misconfiguration: cannot use wildcard origin \"*\" with credentials enabled. \
+                 This violates the CORS specification and browsers will reject the response. \
+                 Use explicit origins instead."
+            );
+        }
+    }
 }

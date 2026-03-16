@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use rpress::core::cors::RpressCors;
 use rpress::core::routes::RpressRoutes;
-use rpress::Rpress;
+use rpress::{Rpress, RpressTlsConfig};
 
 #[allow(dead_code)]
 pub struct TestResponse {
@@ -127,4 +129,80 @@ pub async fn start_test_server_custom<F: FnOnce(&mut Rpress)>(
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     (addr_str, handle)
+}
+
+#[allow(dead_code)]
+pub fn generate_test_tls_config() -> (RpressTlsConfig, Arc<rustls::ClientConfig>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls_pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls_pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
+
+    let mut server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let tls_config = RpressTlsConfig::from_config(server_config);
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add(cert_der).unwrap();
+
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    (tls_config, Arc::new(client_config))
+}
+
+#[allow(dead_code)]
+pub async fn start_test_server_tls(
+    cors: Option<RpressCors>,
+    routes: RpressRoutes,
+) -> (String, tokio::task::JoinHandle<()>, Arc<rustls::ClientConfig>) {
+    start_test_server_tls_custom(cors, routes, |_| {}).await
+}
+
+#[allow(dead_code)]
+pub async fn start_test_server_tls_custom<F: FnOnce(&mut Rpress)>(
+    cors: Option<RpressCors>,
+    routes: RpressRoutes,
+    configure: F,
+) -> (String, tokio::task::JoinHandle<()>, Arc<rustls::ClientConfig>) {
+    let (tls_config, client_config) = generate_test_tls_config();
+
+    let mut app = Rpress::new(cors);
+    app.add_route_group(routes);
+    configure(&mut app);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let addr_str = format!("127.0.0.1:{}", addr.port());
+
+    let handle = tokio::spawn(async move {
+        app.server_with_listener_tls(listener, tls_config).await.ok();
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    (addr_str, handle, client_config)
+}
+
+#[allow(dead_code)]
+pub async fn send_tls_request(
+    addr: &str,
+    request: &str,
+    client_config: &Arc<rustls::ClientConfig>,
+) -> String {
+    let tcp_stream = TcpStream::connect(addr).await.unwrap();
+    let connector = tokio_rustls::TlsConnector::from(client_config.clone());
+    let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = connector.connect(server_name, tcp_stream).await.unwrap();
+
+    tls_stream.write_all(request.as_bytes()).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let mut buf = vec![0u8; 8192];
+    let n = tls_stream.read(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf[..n]).to_string()
 }
