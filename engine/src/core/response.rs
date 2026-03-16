@@ -49,8 +49,8 @@ impl<'a> Response<'a> {
         &mut self,
         status_code: StatusCode,
         body: Vec<u8>,
-        content_type: &'static str
-    ) -> () {
+        content_type: &'static str,
+    ) -> std::io::Result<()> {
         let message = String::from(&status_code);
         let code = u16::from(status_code);
         let status_code_line = format!("HTTP/1.1 {} {}\r\n", code, message);
@@ -61,13 +61,10 @@ impl<'a> Response<'a> {
         self.write_headers(HeadersResponse::Connection, "keep-alive");
 
         let protocol_response = self.build_response(status_code_line, body);
-        match self.socket.write_all(&protocol_response).await {
-            Ok(_) => {
-                self.socket.flush().await.unwrap();
-                self.headers.clear();
-                ()
-            }
-            Err(err) => panic!("Not was possible send a response. Err: {}", err),
-        };
+        self.socket.write_all(&protocol_response).await?;
+        self.socket.flush().await?;
+        self.headers.clear();
+
+        Ok(())
     }
 }

@@ -35,32 +35,6 @@ impl Rpress {
         }
     }
 
-    // fn route<T, F, Fut, R>(self: &mut Arc<Self>, name: T, handler: F)
-    // where
-    //     T: Into<String>,
-    //     R: IntoRpressResult + 'static,
-    //     F: Fn(RequestPayload) -> Fut + Send + Sync + 'static,
-    //     Fut: Future<Output = R> + Send + 'static,
-    // {
-    //     if let Some(rpress) = Arc::get_mut(self) {
-    //         let route = name.into();
-    //         let look_for_method = match HTTP_METHOD_REG.captures(&route) {
-    //             Some(method) => method,
-    //             None => panic!("HTTP method ot found"),
-    //         };
-
-    //         rpress.routes_tree.insert_route(
-    //             &look_for_method[2],
-    //             String::from(HttpVerbs::from(look_for_method[1].to_lowercase().as_str())).as_str(),
-    //             Box::new(move |req| {
-    //                 let fut = handler(req);
-
-    //                 Box::pin(async move { fut.await.into_result() })
-    //             }),
-    //         );
-    //     }
-    // }
-
     pub fn add_route_group(self: &mut Arc<Self>, group: RpressRoutes) -> () {
         if let Some(rpress) = Arc::get_mut(self) {
             rpress.routes_group.push(Some(group));
@@ -74,7 +48,7 @@ impl Rpress {
                     for (route, handler) in group.routes.iter_mut() {
                         let look_for_method = match HTTP_METHOD_REG.captures(&route) {
                             Some(method) => method,
-                            None => panic!("HTTP method ot found"),
+                            None => panic!("HTTP method not found in route: {}", route),
                         };
 
                         if let Some(handler) = handler.take() {
@@ -99,33 +73,33 @@ impl Rpress {
         socket: &mut tokio::net::TcpStream,
     ) -> () {
         if let Some(ref meta) = req.request_metadata {
-            let mut response = Response::new(socket);
-
             if let Some(route) = self.routes_tree.find(meta.uri.as_str()) {
-                let handler = route.0;
-                let method = route.1;
-                let params = route.2;
+                let (handler, method, params) = route;
 
                 if meta.method == *method {
                     req.set_params(params);
-                    match handler(req).await {
+                    let result = handler(req).await;
+
+                    let mut response = Response::new(socket);
+                    match result {
                         Ok(payload) => {
                             let _ = response
                                 .send_response(payload.status, payload.body, payload.content_type)
                                 .await;
                         }
                         Err(error) => {
-                            let get_complete_errro = error.into_rpress_error();
+                            let (status, message) = error.into_rpress_error();
                             let _ = response
                                 .send_response(
-                                    get_complete_errro.0,
-                                    get_complete_errro.1.into_bytes(),
+                                    status,
+                                    message.into_bytes(),
                                     "text/plain; charset=utf-8",
                                 )
                                 .await;
                         }
                     }
                 } else {
+                    let mut response = Response::new(socket);
                     let _ = response
                         .send_response(
                             StatusCode::MethodNotAllowed,
@@ -135,6 +109,7 @@ impl Rpress {
                         .await;
                 }
             } else {
+                let mut response = Response::new(socket);
                 let _ = response
                     .send_response(StatusCode::NotFound, vec![], "text/plain; charset=utf-8")
                     .await;
@@ -157,64 +132,14 @@ impl Rpress {
                     let mut temp_buffer = [0; 1024];
 
                     let chunk_header = b"Transfer-Encoding: chunked";
-                    let mut is_chunked = false;
-
                     let request = Request::new();
-                    let mut current_request: Vec<RequestPayload> = vec![];
 
                     loop {
-                        loop {
-                            if buffer.len() == 0 {
-                                break;
-                            }
-
-                            if is_chunked == false {
-                                if let Some(_) = buffer
-                                    .windows(chunk_header.len())
-                                    .position(|b| b == chunk_header)
-                                {
-                                    is_chunked = true;
-                                }
-                            }
-
-                            match request.parse_http_protocol(&buffer, is_chunked) {
-                                Ok(Some((request, consumed))) => {
-                                    let has_metadata = request.request_metadata.is_some();
-                                    let has_payload = !request.payload.is_empty();
-
-                                    if has_metadata {
-                                        current_request.push(request);
-                                    } else if has_payload {
-                                        if let Some(cr) = current_request.last_mut() {
-                                            cr.payload.extend(request.payload);
-                                        }
-                                    }
-
-                                    buffer.drain(..consumed);
-                                }
-                                Ok(None) => {
-                                    println!("[POSSIBLE_MTU]: Incomplete message");
-                                    break;
-                                }
-                                Err(err) => {
-                                    println!("Error: {}", err);
-                                    break;
-                                }
-                            }
-                        }
-
-                        for request in current_request {
-                            thread_self.dispatch_route(request, &mut socket).await;
-                        }
-
-                        current_request = vec![];
-                        is_chunked = false;
-
                         let n = match socket.read(&mut temp_buffer).await {
                             Ok(0) => break,
                             Ok(n) => n,
                             Err(e) => {
-                                println!("Error in read socket: {}", e);
+                                eprintln!("Error in read socket: {}", e);
                                 break;
                             }
                         };
@@ -222,8 +147,52 @@ impl Rpress {
                         buffer.extend_from_slice(&temp_buffer[..n]);
 
                         if buffer.len() > thread_self.max_buffer_capacity {
-                            println!("Buffer capacity overflowed");
+                            eprintln!("Buffer capacity overflowed");
                             break;
+                        }
+
+                        let mut is_chunked = buffer
+                            .windows(chunk_header.len())
+                            .any(|b| b == chunk_header);
+
+                        let mut current_requests: Vec<RequestPayload> = vec![];
+
+                        loop {
+                            if buffer.is_empty() {
+                                break;
+                            }
+
+                            if !is_chunked {
+                                is_chunked = buffer
+                                    .windows(chunk_header.len())
+                                    .any(|b| b == chunk_header);
+                            }
+
+                            match request.parse_http_protocol(&buffer, is_chunked) {
+                                Ok(Some((parsed, consumed))) => {
+                                    let has_metadata = parsed.request_metadata.is_some();
+                                    let has_payload = !parsed.payload.is_empty();
+
+                                    if has_metadata {
+                                        current_requests.push(parsed);
+                                    } else if has_payload {
+                                        if let Some(cr) = current_requests.last_mut() {
+                                            cr.payload.extend(parsed.payload);
+                                        }
+                                    }
+
+                                    buffer.drain(..consumed);
+                                }
+                                Ok(None) => break,
+                                Err(err) => {
+                                    eprintln!("Parse error: {}", err);
+                                    break;
+                                }
+                            }
+                        }
+
+                        for req in current_requests {
+                            thread_self.dispatch_route(req, &mut socket).await;
                         }
                     }
                 }

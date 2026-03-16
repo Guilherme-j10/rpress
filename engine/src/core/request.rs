@@ -16,9 +16,15 @@ impl Request {
         let mut parse_only_chunk = false;
         let rq_line = buffer.windows(2).position(|b| b == b"\r\n");
 
-        if rq_line.is_some() && rq_line.unwrap() < 3
-            || String::from_utf8_lossy(&buffer[..rq_line.unwrap()]).contains("HTTP/1.1") == false
-        {
+        let is_valid_request_line = match rq_line {
+            Some(pos) if pos >= 3 => {
+                String::from_utf8_lossy(&buffer[..pos]).contains("HTTP/1.1")
+            }
+            Some(_) => false,
+            None => false,
+        };
+
+        if !is_valid_request_line {
             if is_chunk {
                 parse_only_chunk = true;
             } else {
@@ -60,46 +66,40 @@ impl Request {
             let header_lines = &buffer[rq_bytes + 2..h_bytes];
             let headers_str = String::from_utf8_lossy(header_lines).to_owned();
             let headers = headers_str.split("\r\n").collect::<Vec<&str>>();
-            let mut content_lenght = 0;
+            let mut content_length = 0;
 
             let mut header_map: HashMap<String, String> = HashMap::new();
             for header in headers {
-                let data = header.split(": ").collect::<Vec<_>>();
+                let (key, value) = match header.split_once(": ") {
+                    Some((k, v)) => (k.to_string(), v.to_string()),
+                    None => continue,
+                };
 
-                let index = data.get(0).unwrap().to_string();
-                let value = data.get(1).unwrap().to_string();
-
-                if index == "Content-Length" {
-                    content_lenght = value.parse().unwrap();
+                if key == "Content-Length" {
+                    content_length = value.parse().unwrap_or(0);
                 }
 
-                header_map.insert(index, value);
+                header_map.insert(key, value);
             }
 
             let body_start = h_bytes + 4;
-            let body_end = body_start + content_lenght;
+            let body_end = body_start + content_length;
 
             if buffer.len() < body_end {
                 return Ok(None);
             }
 
-            let complete_uri = request_line_content
-                .get(1)
-                .unwrap()
-                .split("?")
-                .collect::<Vec<&str>>();
+            let raw_uri = &request_line_content[1];
+            let (uri, query_path) = match raw_uri.split_once("?") {
+                Some((path, qs)) => (path.to_string(), qs.to_string()),
+                None => (raw_uri.to_string(), String::new()),
+            };
 
             request_metadata = Some(RequestMetadata {
-                uri: complete_uri
-                    .get(0)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default(),
-                query_path: complete_uri
-                    .get(1)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default(),
-                method: request_line_content.get(0).unwrap().to_owned(),
-                http_method: request_line_content.get(2).unwrap().to_owned(),
+                uri,
+                query_path,
+                method: request_line_content[0].clone(),
+                http_method: request_line_content[2].clone(),
                 headers: header_map,
             });
             payload = buffer[body_start..body_end].to_vec();
