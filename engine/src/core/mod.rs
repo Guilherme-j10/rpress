@@ -1,4 +1,4 @@
 pub mod routes;
 pub mod request;
-pub mod response;
+pub(crate) mod response;
 pub mod handler_response;
