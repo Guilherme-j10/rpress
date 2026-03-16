@@ -1,22 +1,22 @@
 # Rpress
 
-Framework HTTP/1.1 assíncrono em Rust, construído sobre `tokio`. Projetado para ser leve, seguro e pronto para produção.
+An async HTTP/1.1 framework in Rust, built on top of `tokio`. Designed to be lightweight, secure, and production-ready.
 
 ## Features
 
-- Roteamento baseado em trie (estático, dinâmico, multi-method)
-- Middleware (global e por grupo de rotas)
+- Trie-based routing (static, dynamic, multi-method)
+- Middleware (global and per route group)
 - Request body streaming via `mpsc::channel`
-- Compressão automática gzip/brotli
-- CORS nativo com builder pattern
-- Rate limiting por IP
-- Servir arquivos estáticos
-- Cookies (parse e Set-Cookie builder)
+- Automatic gzip/brotli compression
+- Native CORS with builder pattern
+- IP-based rate limiting
+- Static file serving
+- Cookies (parsing and Set-Cookie builder)
 - Graceful shutdown
-- Timeouts configuráveis (leitura e idle)
-- Limite de conexões simultâneas
-- Headers de segurança automáticos (`X-Content-Type-Options: nosniff`)
-- Request ID automático (`X-Request-ID`)
+- Configurable timeouts (read and idle)
+- Concurrent connection limits
+- Automatic security headers (`X-Content-Type-Options: nosniff`)
+- Automatic request ID (`X-Request-ID`)
 
 ## Quick Start
 
@@ -46,11 +46,11 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-## Roteamento
+## Routing
 
-As rotas usam o formato `:método/caminho`. Segmentos dinâmicos são prefixados com `:`.
+Routes use the format `:method/path`. Dynamic segments are prefixed with `:`.
 
-### Rotas estáticas
+### Static routes
 
 ```rust
 let mut routes = RpressRoutes::new();
@@ -60,7 +60,7 @@ routes.add(":get/api/users", |_req: RequestPayload| async move {
 });
 ```
 
-### Rotas com parâmetros dinâmicos
+### Dynamic route parameters
 
 ```rust
 routes.add(":get/api/users/:id", |req: RequestPayload| async move {
@@ -69,7 +69,7 @@ routes.add(":get/api/users/:id", |req: RequestPayload| async move {
 });
 ```
 
-### Multi-method no mesmo path
+### Multi-method on the same path
 
 ```rust
 routes.add(":get/api/resource", |_req: RequestPayload| async move {
@@ -86,15 +86,15 @@ routes.add(":delete/api/resource/:id", |req: RequestPayload| async move {
 });
 ```
 
-### Métodos HTTP suportados
+### Supported HTTP methods
 
 `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`
 
 ## Middleware
 
-### Middleware global
+### Global middleware
 
-Aplicado a todas as rotas:
+Applied to all routes:
 
 ```rust
 app.use_middleware(|req, next| async move {
@@ -111,7 +111,7 @@ app.use_middleware(|req, next| async move {
 });
 ```
 
-### Middleware por grupo de rotas
+### Route group middleware
 
 ```rust
 let mut routes = RpressRoutes::new();
@@ -133,19 +133,19 @@ routes.add(":get/admin/dashboard", |_req: RequestPayload| async move {
 
 ## Request
 
-### Acessando dados do request
+### Accessing request data
 
 ```rust
 routes.add(":post/api/data", |req: RequestPayload| async move {
-    // URI e método
+    // URI and method
     let uri = req.uri();
     let method = req.method();
 
-    // Headers (chaves em lowercase)
+    // Headers (keys are lowercase)
     let content_type = req.header("content-type").unwrap_or("unknown");
     let auth = req.header("authorization");
 
-    // Parâmetros de rota
+    // Route parameters
     let id = req.get_param("id");
 
     // Query string — GET /search?q=rust&page=1
@@ -156,10 +156,10 @@ routes.add(":post/api/data", |req: RequestPayload| async move {
     let cookies = req.cookies();
     let session = cookies.get("session_id");
 
-    // Body como string
+    // Body as string
     let body_text = req.body_str().unwrap_or("invalid utf8");
 
-    // Body como JSON
+    // Body as JSON
     let data: serde_json::Value = req.body_json().unwrap();
 
     ResponsePayload::text("ok")
@@ -168,15 +168,15 @@ routes.add(":post/api/data", |req: RequestPayload| async move {
 
 ### Body Streaming
 
-Para uploads grandes, o Rpress pode transmitir o body em chunks via channel em vez de acumular tudo na memória. O threshold é configurável:
+For large uploads, Rpress can stream the body in chunks via a channel instead of accumulating everything in memory. The threshold is configurable:
 
 ```rust
-app.set_stream_threshold(64 * 1024); // streaming para bodies > 64KB
+app.set_stream_threshold(64 * 1024); // stream bodies > 64KB
 ```
 
-#### `collect_body()` — Uso simples (recomendado)
+#### `collect_body()` — Simple usage (recommended)
 
-Coleta o body inteiro em um `Vec<u8>`. Funciona tanto para bodies pequenos (já carregados) quanto para streaming:
+Collects the entire body into a `Vec<u8>`. Works for both small bodies (already buffered) and streamed ones:
 
 ```rust
 routes.add(":post/upload", |mut req: RequestPayload| async move {
@@ -185,9 +185,9 @@ routes.add(":post/upload", |mut req: RequestPayload| async move {
 });
 ```
 
-#### `body_stream()` — Processamento chunk por chunk
+#### `body_stream()` — Chunk-by-chunk processing
 
-Para processar dados sob demanda sem acumular tudo na memória:
+For processing data on demand without accumulating everything in memory:
 
 ```rust
 routes.add(":post/stream", |mut req: RequestPayload| async move {
@@ -195,7 +195,6 @@ routes.add(":post/stream", |mut req: RequestPayload| async move {
 
     if let Some(mut rx) = req.body_stream() {
         while let Some(chunk) = rx.recv().await {
-            // Processar cada chunk individualmente
             total += chunk.len();
         }
     }
@@ -206,10 +205,10 @@ routes.add(":post/stream", |mut req: RequestPayload| async move {
 
 ## Response
 
-### Builders disponíveis
+### Available builders
 
 ```rust
-// Texto simples
+// Plain text
 ResponsePayload::text("Hello world")
 
 // HTML
@@ -218,17 +217,17 @@ ResponsePayload::html("<h1>Welcome</h1>")
 // JSON
 ResponsePayload::json(&serde_json::json!({"status": "ok"})).unwrap()
 
-// Bytes com content-type customizado
+// Bytes with custom content-type
 ResponsePayload::bytes(vec![0x89, 0x50, 0x4E, 0x47], "image/png")
 
-// Vazio (204 No Content)
+// Empty (204 No Content)
 ResponsePayload::empty()
 
 // Redirect
 ResponsePayload::redirect("/new-location", StatusCode::Found)
 ```
 
-### Encadeando modificadores
+### Chaining modifiers
 
 ```rust
 ResponsePayload::text("data")
@@ -254,11 +253,11 @@ ResponsePayload::text("logged in")
     .set_cookie(&cookie)
 ```
 
-Múltiplos `Set-Cookie` são suportados — cada `.set_cookie()` adiciona um header separado.
+Multiple `Set-Cookie` headers are supported — each `.set_cookie()` call adds a separate header.
 
 ## CORS
 
-Configuração nativa via builder pattern:
+Native configuration via builder pattern:
 
 ```rust
 let cors = RpressCors::new()
@@ -272,68 +271,68 @@ let cors = RpressCors::new()
 let mut app = Rpress::new(Some(cors));
 ```
 
-Sem CORS:
+Without CORS:
 
 ```rust
 let mut app = Rpress::new(None);
 ```
 
-Headers automáticos: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Vary: Origin`. Preflight `OPTIONS` é tratado automaticamente.
+Automatic headers: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Vary: Origin`. Preflight `OPTIONS` requests are handled automatically.
 
-## Compressão
+## Compression
 
-Gzip e Brotli com negociação automática via `Accept-Encoding`:
+Gzip and Brotli with automatic negotiation via `Accept-Encoding`:
 
 ```rust
 app.enable_compression(true);
 ```
 
-Comportamento:
-- Brotli é preferido quando `Accept-Encoding: br` está presente
-- Gzip é usado quando `Accept-Encoding: gzip` está presente
-- Bodies menores que 256 bytes não são comprimidos
-- Tipos já comprimidos (image/*, video/*, audio/*, zip, gzip) são ignorados
-- SVG é comprimido normalmente
-- `Content-Encoding` e `Vary: Accept-Encoding` são adicionados automaticamente
+Behavior:
+- Brotli is preferred when `Accept-Encoding: br` is present
+- Gzip is used when `Accept-Encoding: gzip` is present
+- Bodies smaller than 256 bytes are not compressed
+- Already compressed types (image/*, video/*, audio/*, zip, gzip) are skipped
+- SVG is compressed normally
+- `Content-Encoding` and `Vary: Accept-Encoding` are added automatically
 
 ## Rate Limiting
 
-Limitar requisições por IP usando token bucket:
+Limit requests per IP using a token bucket:
 
 ```rust
-app.set_rate_limit(100, 60); // 100 requisições por 60 segundos
+app.set_rate_limit(100, 60); // 100 requests per 60 seconds
 ```
 
-Quando o limite é excedido, retorna `429 Too Many Requests`. Entradas expiradas são limpas automaticamente quando o store excede 10.000 registros.
+When the limit is exceeded, returns `429 Too Many Requests`. Expired entries are automatically cleaned up when the store exceeds 10,000 records.
 
-## Arquivos Estáticos
+## Static Files
 
 ```rust
 app.serve_static("/assets", "./public");
 app.serve_static("/uploads", "/var/data/uploads");
 ```
 
-- Content-Type é detectado pela extensão do arquivo
-- Path traversal é prevenido com `canonicalize()`
-- Suporta: HTML, CSS, JS, JSON, imagens (PNG, JPG, GIF, SVG, WebP, ICO), fontes (WOFF, WOFF2, TTF), PDF, XML, vídeos (MP4, WebM)
+- Content-Type is detected by file extension
+- Path traversal is prevented with `canonicalize()`
+- Supports: HTML, CSS, JS, JSON, images (PNG, JPG, GIF, SVG, WebP, ICO), fonts (WOFF, WOFF2, TTF), PDF, XML, videos (MP4, WebM)
 
-## Configuração Completa
+## Full Configuration
 
 ```rust
 use std::time::Duration;
 
 let mut app = Rpress::new(Some(cors));
 
-// Capacidade do buffer de leitura (default: 40KB)
+// Read buffer capacity (default: 40KB)
 app.set_buffer_capacity(1024 * 1024);
 
-// Timeout de leitura por request (default: 30s)
+// Read timeout per request (default: 30s)
 app.set_read_timeout(Duration::from_secs(30));
 
-// Timeout de idle entre requests keep-alive (default: 60s)
+// Idle timeout between keep-alive requests (default: 60s)
 app.set_idle_timeout(Duration::from_secs(120));
 
-// Máximo de conexões simultâneas (default: 1024)
+// Maximum concurrent connections (default: 1024)
 app.set_max_connections(2048);
 
 // Rate limiting
@@ -342,23 +341,23 @@ app.set_rate_limit(100, 60);
 // Body streaming threshold (default: 64KB)
 app.set_stream_threshold(64 * 1024);
 
-// Compressão gzip/brotli (default: desabilitado)
+// Gzip/brotli compression (default: disabled)
 app.enable_compression(true);
 
-// Arquivos estáticos
+// Static files
 app.serve_static("/assets", "./public");
 
-// Rotas e middleware
+// Routes and middleware
 app.use_middleware(|req, next| async move { next(req).await });
 app.add_route_group(routes);
 
-// Iniciar servidor
+// Start the server
 app.listen("0.0.0.0:3000").await?;
 ```
 
-## Controllers com `handler!` macro
+## Controllers with the `handler!` macro
 
-Para organizar handlers em structs com `Arc`:
+Organize handlers in structs with `Arc`:
 
 ```rust
 use rpress::handler;
@@ -404,9 +403,9 @@ pub fn get_user_routes() -> RpressRoutes {
 }
 ```
 
-## Erros Customizados
+## Custom Errors
 
-Implemente `RpressErrorExt` para retornar erros com status codes customizados:
+Implement `RpressErrorExt` to return errors with custom status codes:
 
 ```rust
 use rpress::{RpressErrorExt, StatusCode};
@@ -430,43 +429,43 @@ routes.add(":get/items/:id", |req: RequestPayload| async move {
 });
 ```
 
-Handlers podem retornar:
-- `ResponsePayload` (200 implícito)
+Handlers can return:
+- `ResponsePayload` (implicit 200)
 - `Result<ResponsePayload, RpressError>`
-- `Result<ResponsePayload, E>` onde `E: RpressErrorExt`
-- Qualquer `E: RpressErrorExt` diretamente (erro sem Result)
-- `()` (202 Accepted sem body)
+- `Result<ResponsePayload, E>` where `E: RpressErrorExt`
+- Any `E: RpressErrorExt` directly (error without Result)
+- `()` (202 Accepted with no body)
 
-## Headers de Segurança
+## Security Headers
 
-Aplicados automaticamente a todas as responses:
+Automatically applied to all responses:
 
-| Header | Valor |
+| Header | Value |
 |--------|-------|
 | `X-Content-Type-Options` | `nosniff` |
-| `X-Request-ID` | UUID v4 único por request |
+| `X-Request-ID` | Unique UUID v4 per request |
 | `Server` | `Rpress/1.0` |
 | `Connection` | `keep-alive` |
 
 ## Graceful Shutdown
 
-O servidor responde a `SIGINT` (Ctrl+C):
+The server responds to `SIGINT` (Ctrl+C):
 
-1. Para de aceitar novas conexões
-2. Aguarda conexões ativas finalizarem
-3. Encerra limpo
+1. Stops accepting new connections
+2. Waits for active connections to finish
+3. Shuts down cleanly
 
-## Limites de Segurança
+## Security Limits
 
-| Recurso | Limite |
-|---------|--------|
+| Resource | Limit |
+|----------|-------|
 | Request line | 8 KB |
-| Headers (tamanho) | 8 KB |
-| Headers (quantidade) | 100 |
+| Headers (size) | 8 KB |
+| Headers (count) | 100 |
 | Body (Content-Length) | 10 MB |
-| Chunk individual | 1 MB |
-| Buffer de conexão | Configurável (default 40 KB) |
+| Individual chunk | 1 MB |
+| Connection buffer | Configurable (default 40 KB) |
 
-## Licença
+## License
 
 MIT
