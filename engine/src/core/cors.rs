@@ -1,4 +1,17 @@
 /// CORS configuration builder for the Rpress server.
+///
+/// Handles `Access-Control-*` headers automatically, including preflight `OPTIONS` requests.
+/// Validates at construction time that wildcard origins are not used with credentials.
+///
+/// # Example
+///
+/// ```ignore
+/// let cors = RpressCors::new()
+///     .set_origins(vec!["https://example.com"])
+///     .set_methods(vec!["GET", "POST"])
+///     .set_credentials(true);
+/// let mut app = Rpress::new(Some(cors));
+/// ```
 pub struct RpressCors {
     pub(crate) allowed_origins: Vec<String>,
     pub(crate) allowed_methods: Vec<String>,

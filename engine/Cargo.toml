@@ -1,10 +1,10 @@
 [package]
 name = "rpress"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Lightweight async HTTP/1.1 and HTTP/2 framework built on tokio with TLS (rustls), routing, middleware, streaming, compression, CORS and rate limiting"
 license = "MIT"
-repository = "https://github.com/guilhermecampos/rpress"
+repository = "https://github.com/Guilherme-j10/rpress"
 keywords = ["http", "server", "async", "framework", "tokio"]
 categories = ["web-programming::http-server", "asynchronous"]
 readme = "../README.md"

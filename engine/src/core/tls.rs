@@ -7,6 +7,15 @@ use rustls_pemfile::{certs, private_key};
 use tokio_rustls::TlsAcceptor;
 
 /// TLS configuration for the Rpress server, backed by rustls.
+///
+/// Supports automatic ALPN negotiation for HTTP/2 when the client supports it.
+///
+/// # Example
+///
+/// ```ignore
+/// let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+/// app.listen_tls("0.0.0.0:443", tls).await?;
+/// ```
 pub struct RpressTlsConfig {
     pub(crate) acceptor: TlsAcceptor,
 }

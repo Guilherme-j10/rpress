@@ -4,32 +4,47 @@ use regex::Regex;
 
 use crate::core::handler_response::{ResponsePayload, RpressError};
 
+/// Regex for extracting the HTTP method and path from route definitions (e.g. `:get/users`).
 pub static HTTP_METHOD_REG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^:([^\/]+)(.*)$").unwrap());
+/// Regex for matching percent-encoded UTF-8 byte sequences in query strings.
 pub static PERCENT_ENCODING: LazyLock<Regex> = 
     LazyLock::new(|| Regex::new(r"(%F[0-7](?:%[89AB][0-9A-F]){3})|(%E[0-F](?:%[89AB][0-9A-F]){2})|(%C[23]%[89AB][0-9A-F])|(%[0-9A-F]{2})").unwrap());
 
 /// Result type alias for Rpress handler return values.
+///
+/// Handlers return `RpressResult` (or `RpressResult<E>` with a custom error type).
 pub type RpressResult<E = RpressError> = Result<ResponsePayload, E>;
+
+/// A boxed async handler function that receives a [`RequestPayload`] and returns a [`RpressResult`].
 pub type Handler = Box<
     dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
         + Send
         + Sync,
 >;
 
+/// The "next" function in the middleware chain, calling the next middleware or final handler.
 pub type Next = Arc<
     dyn Fn(RequestPayload) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
         + Send
         + Sync,
 >;
 
+/// A boxed async middleware function that receives a [`RequestPayload`] and a [`Next`] callback.
 pub type Middleware = Arc<
     dyn Fn(RequestPayload, Next) -> Pin<Box<dyn Future<Output = RpressResult> + Send + 'static>>
         + Send
         + Sync,
 >;
 
-/// Macro to create a handler closure from a controller method.
+/// Macro to create a handler closure from an `Arc<Controller>` and one of its async methods.
+///
+/// # Example
+///
+/// ```ignore
+/// let controller = UserController::new(); // returns Arc<UserController>
+/// routes.add(":get/users/:id", handler!(controller, get_user));
+/// ```
 #[macro_export]
 macro_rules! handler {
     ($controller:ident, $method:ident) => {{
@@ -44,19 +59,31 @@ macro_rules! handler {
 /// Parsed HTTP request metadata including method, URI, and headers.
 #[derive(Debug)]
 pub struct RequestMetadata {
+    /// The HTTP method (e.g. `"GET"`, `"POST"`).
     pub method: String,
+    /// The decoded request URI path (e.g. `"/users/42"`).
     pub uri: String,
     #[allow(dead_code)]
     pub(crate) query_path: String,
+    /// The HTTP version string (e.g. `"HTTP/1.1"` or `"HTTP/2"`).
     pub http_method: String,
+    /// Request headers as a map of lowercase keys to concatenated values.
     pub headers: HashMap<String, String>,
 }
 
 /// Incoming HTTP request with metadata, body, route params, and query params.
+///
+/// Use the helper methods ([`uri()`](RequestPayload::uri), [`method()`](RequestPayload::method),
+/// [`header()`](RequestPayload::header), [`get_param()`](RequestPayload::get_param), etc.)
+/// to access request data ergonomically.
 pub struct RequestPayload {
+    /// Parsed request metadata (method, URI, headers). `None` for chunked-only frames.
     pub request_metadata: Option<RequestMetadata>,
+    /// The raw request body bytes (empty when using body streaming).
     pub payload: Vec<u8>,
+    /// Route parameters extracted from dynamic segments (e.g. `:id`).
     pub params: HashMap<String, String>,
+    /// Parsed query string parameters.
     pub query: HashMap<String, String>,
     pub(crate) body_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
 }
@@ -193,63 +220,121 @@ impl From<HeadersResponse> for String {
 }
 
 /// HTTP status codes supported by Rpress.
+///
+/// Covers informational (1xx), success (2xx), redirection (3xx), client error (4xx),
+/// and server error (5xx) responses as defined by RFC 9110 and common extensions.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum StatusCode {
+    /// 100 Continue
     Continue = 100,
+    /// 101 Switching Protocols
     SwitchingProtocols = 101,
+    /// 200 OK
     OK = 200,
+    /// 201 Created
     Created = 201,
+    /// 202 Accepted
     Accepted = 202,
+    /// 203 Non-Authoritative Information
     NonAuthoritativeInformation = 203,
+    /// 204 No Content
     NoContent = 204,
+    /// 205 Reset Content
     ResetContent = 205,
+    /// 206 Partial Content
     PartialContent = 206,
+    /// 207 Multi-Status (WebDAV)
     MultiStatus = 207,
+    /// 208 Already Reported (WebDAV)
     AlreadyReported = 208,
+    /// 301 Moved Permanently
     MovedPermanently = 301,
+    /// 302 Found (temporary redirect)
     Found = 302,
+    /// 303 See Other
     SeeOther = 303,
+    /// 304 Not Modified
     NotModified = 304,
+    /// 307 Temporary Redirect
     TemporaryRedirect = 307,
+    /// 308 Permanent Redirect
     PermanentRedirect = 308,
+    /// 400 Bad Request
     BadRequest = 400,
+    /// 401 Unauthorized
     Unauthorized = 401,
+    /// 403 Forbidden
     Forbidden = 403,
+    /// 404 Not Found
     NotFound = 404,
+    /// 405 Method Not Allowed
     MethodNotAllowed = 405,
+    /// 406 Not Acceptable
     NotAcceptable = 406,
+    /// 407 Proxy Authentication Required
     ProxyAuthenticationRequired = 407,
+    /// 408 Request Timeout
     RequestTimeout = 408,
+    /// 409 Conflict
     Conflict = 409,
+    /// 410 Gone
     Gone = 410,
+    /// 411 Length Required
     LengthRequired = 411,
+    /// 412 Precondition Failed
     PreconditionFailed = 412,
+    /// 413 Payload Too Large
     PayloadTooLarge = 413,
+    /// 414 URI Too Long
     UriTooLong = 414,
+    /// 415 Unsupported Media Type
     UnsupportedMediaType = 415,
+    /// 416 Range Not Satisfiable
     RangeNotSatisfiable = 416,
+    /// 417 Expectation Failed
     ExpectationFailed = 417,
+    /// 418 I'm a Teapot (RFC 2324)
     ImaTeapot = 418,
+    /// 422 Unprocessable Entity (WebDAV)
     UnprocessableEntity = 422,
+    /// 423 Locked (WebDAV)
     Locked = 423,
+    /// 424 Failed Dependency (WebDAV)
     FailedDependency = 424,
+    /// 425 Unordered Collection
     UnorderedCollection = 425,
+    /// 426 Upgrade Required
     UpgradeRequired = 426,
+    /// 428 Precondition Required
     PreconditionRequired = 428,
+    /// 429 Too Many Requests
     TooManyRequests = 429,
+    /// 431 Request Header Fields Too Large
     RequestHeaderFieldsTooLarge = 431,
+    /// 500 Internal Server Error
     InternalServerError = 500,
+    /// 501 Not Implemented
     NotImplemented = 501,
+    /// 502 Bad Gateway
     BadGateway = 502,
+    /// 503 Service Unavailable
     ServiceUnavailable = 503,
+    /// 504 Gateway Timeout
     GatewayTimeout = 504,
+    /// 505 HTTP Version Not Supported
     HttpVersionNotSupported = 505,
+    /// 506 Variant Also Negotiates
     VariantAlsoNegotiates = 506,
+    /// 507 Insufficient Storage (WebDAV)
     InsufficientStorage = 507,
+    /// 508 Loop Detected (WebDAV)
     LoopDetected = 508,
+    /// 510 Not Extended
     NotExtended = 510,
+    /// 511 Network Authentication Required
     NetworkAuthenticationRequired = 511,
+    /// 520 Unknown Error
     UnknownError = 520,
 }
 

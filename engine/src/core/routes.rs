@@ -122,6 +122,15 @@ impl Route {
 }
 
 /// A route group that bundles related routes and optional group-level middleware.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut routes = RpressRoutes::new();
+/// routes.use_middleware(|req, next| async move { next(req).await });
+/// routes.add(":get/hello", |_req: RequestPayload| async { ResponsePayload::text("hi") });
+/// app.add_route_group(routes);
+/// ```
 #[derive(Default)]
 pub struct RpressRoutes {
     pub(crate) routes: HashMap<String, Option<Handler>>,

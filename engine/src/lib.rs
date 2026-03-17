@@ -45,17 +45,26 @@
 //! }
 //! ```
 
+/// Core modules: routing, request/response handling, CORS, TLS, rate limiting, and error types.
 pub mod core;
+/// Type definitions: request/response types, status codes, handler signatures, and macros.
 pub mod types;
 
+/// CORS configuration builder.
 pub use core::cors::RpressCors;
+/// Internal engine error type.
 pub use core::error::RpressEngineError;
+/// Response payload builder, cookie builder, error types, and handler result traits.
 pub use core::handler_response::{
     CookieBuilder, IntoRpressResult, ResponsePayload, RpressError, RpressErrorExt,
 };
+/// Route group for organizing routes with optional group-level middleware.
 pub use core::routes::RpressRoutes;
+/// TLS configuration for HTTPS and HTTP/2 support.
 pub use core::tls::RpressTlsConfig;
+/// Rate limiting trait and default in-memory implementation.
 pub use core::rate_limiter::{RateLimiter, InMemoryRateLimiter};
+/// Request payload, result type alias, and HTTP status codes.
 pub use types::definitions::{RequestPayload, RpressResult, StatusCode};
 
 use crate::{
@@ -82,7 +91,11 @@ pub(crate) struct ResolvedResponse {
     pub req_origin: Option<String>,
 }
 
-/// Async HTTP/1.1 server with routing, middleware, compression, and more.
+/// Async HTTP/1.1 and HTTP/2 server with routing, middleware, compression, and more.
+///
+/// Create an instance with [`Rpress::new`], configure it with builder methods, add route
+/// groups via [`add_route_group`](Rpress::add_route_group), then call
+/// [`listen`](Rpress::listen) or [`listen_tls`](Rpress::listen_tls) to start serving.
 pub struct Rpress {
     routes_tree: Route,
     routes_group: Vec<Option<RpressRoutes>>,

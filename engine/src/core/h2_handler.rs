@@ -62,10 +62,10 @@ fn parse_query_string(query_path: &str) -> HashMap<String, String> {
         return result;
     }
     for pair in query_path.split('&') {
-        if let Some((key, value)) = pair.split_once('=') {
-            if !key.is_empty() {
-                result.insert(key.to_string(), value.replace('+', " "));
-            }
+        if let Some((key, value)) = pair.split_once('=')
+            && !key.is_empty()
+        {
+            result.insert(key.to_string(), value.replace('+', " "));
         }
     }
     result
@@ -182,9 +182,9 @@ async fn handle_h2_stream(
         }
     };
 
-    if !final_body.is_empty() {
-        if let Err(e) = send_stream.send_data(Bytes::from(final_body), true) {
-            tracing::error!("HTTP/2 send_data error: {}", e);
-        }
+    if !final_body.is_empty()
+        && let Err(e) = send_stream.send_data(Bytes::from(final_body), true)
+    {
+        tracing::error!("HTTP/2 send_data error: {}", e);
     }
 }

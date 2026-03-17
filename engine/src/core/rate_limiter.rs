@@ -9,6 +9,9 @@ use tokio::sync::Mutex;
 /// Implement this trait to plug in a custom rate limiter (e.g. Redis-backed)
 /// for distributed environments where multiple server instances share state.
 pub trait RateLimiter: Send + Sync + 'static {
+    /// Returns `true` if the request identified by `key` is allowed, `false` if rate-limited.
+    ///
+    /// `max_requests` is the maximum number of requests allowed within `window_secs` seconds.
     fn check(
         &self,
         key: &str,
@@ -27,6 +30,7 @@ pub struct InMemoryRateLimiter {
 }
 
 impl InMemoryRateLimiter {
+    /// Creates a new empty in-memory rate limiter.
     pub fn new() -> Self {
         Self {
             store: Mutex::new(HashMap::new()),

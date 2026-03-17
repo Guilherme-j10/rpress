@@ -6,9 +6,13 @@ fn sanitize_header_value(value: &str) -> String {
 
 /// HTTP response payload with status, body, content type, and headers.
 pub struct ResponsePayload {
+    /// The HTTP status code for this response.
     pub status: StatusCode,
+    /// The response body as raw bytes.
     pub body: Vec<u8>,
+    /// The value of the `Content-Type` header.
     pub content_type: String,
+    /// Additional response headers as `(name, value)` pairs.
     pub headers: Vec<(String, String)>,
 }
 
@@ -131,13 +135,21 @@ impl ResponsePayload {
 
 /// Builder for constructing Set-Cookie headers with various attributes.
 pub struct CookieBuilder {
+    /// The cookie name.
     pub name: String,
+    /// The cookie value.
     pub value: String,
+    /// The `Path` attribute (default: `"/"`).
     pub path: Option<String>,
+    /// The `Domain` attribute.
     pub domain: Option<String>,
+    /// The `Max-Age` attribute in seconds.
     pub max_age: Option<i64>,
+    /// The `SameSite` attribute (`"Strict"`, `"Lax"`, or `"None"`).
     pub same_site: Option<String>,
+    /// Whether the `HttpOnly` flag is set (default: `true`).
     pub http_only: bool,
+    /// Whether the `Secure` flag is set (default: `false`).
     pub secure: bool,
 }
 
@@ -241,7 +253,9 @@ impl<E: RpressErrorExt> IntoRpressResult for Result<ResponsePayload, E> {
 /// Default error type for Rpress handlers, carrying an HTTP status and message.
 #[derive(Debug)]
 pub struct RpressError {
+    /// The HTTP status code to return.
     pub status: StatusCode,
+    /// The error message sent as the response body.
     pub message: String,
 }
 
