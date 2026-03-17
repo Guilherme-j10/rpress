@@ -597,6 +597,7 @@ impl Rpress {
         self: &Arc<Self>,
         mut socket: S,
         addr: SocketAddr,
+        cancel: tokio_util::sync::CancellationToken,
     ) {
         let mut buffer: Vec<u8> = Vec::with_capacity(4096);
         let mut temp_buffer = [0; 1024];
@@ -608,23 +609,32 @@ impl Rpress {
         loop {
             let dur = if use_idle_timeout { idle_dur } else { read_dur };
 
-            let n = match timeout(dur, socket.read(&mut temp_buffer)).await {
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) => {
-                    tracing::error!("Socket read error: {}", e);
+            let n = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    tracing::debug!("Shutdown: closing connection for {}", addr);
                     break;
                 }
-                Err(_) => {
-                    tracing::debug!("Connection timeout for {}", addr);
-                    let rid = uuid::Uuid::new_v4().to_string();
-                    self.send_error_status(
-                        StatusCode::RequestTimeout,
-                        &mut socket,
-                        None,
-                        &rid,
-                    ).await;
-                    break;
+                result = timeout(dur, socket.read(&mut temp_buffer)) => {
+                    match result {
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(n)) => n,
+                        Ok(Err(e)) => {
+                            tracing::error!("Socket read error: {}", e);
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::debug!("Connection timeout for {}", addr);
+                            let rid = uuid::Uuid::new_v4().to_string();
+                            self.send_error_status(
+                                StatusCode::RequestTimeout,
+                                &mut socket,
+                                None,
+                                &rid,
+                            ).await;
+                            break;
+                        }
+                    }
                 }
             };
 
@@ -823,6 +833,7 @@ impl Rpress {
     ) -> anyhow::Result<()> {
         let semaphore = Arc::new(Semaphore::new(arc_self.max_connections));
         let tracker = tokio_util::task::TaskTracker::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
         let shutdown = tokio::signal::ctrl_c();
         tokio::pin!(shutdown);
 
@@ -856,6 +867,7 @@ impl Rpress {
 
                     let server = arc_self.clone();
                     let acceptor = tls_acceptor.clone();
+                    let conn_cancel = cancel.child_token();
 
                     let conn_span = tracing::info_span!(
                         "http.connection",
@@ -877,7 +889,7 @@ impl Rpress {
                                     if is_h2 {
                                         core::h2_handler::handle_h2_connection(&server, tls_stream, server.max_parser_body_size).await;
                                     } else {
-                                        server.handle_h1_connection(tls_stream, addr).await;
+                                        server.handle_h1_connection(tls_stream, addr, conn_cancel).await;
                                     }
                                 }
                                 Err(e) => {
@@ -885,7 +897,7 @@ impl Rpress {
                                 }
                             }
                         } else {
-                            server.handle_h1_connection(socket, addr).await;
+                            server.handle_h1_connection(socket, addr, conn_cancel).await;
                         }
                     }.instrument(conn_span));
                 }
@@ -896,6 +908,7 @@ impl Rpress {
             }
         }
 
+        cancel.cancel();
         tracker.close();
         tracker.wait().await;
         tracing::info!("Rpress server stopped");
