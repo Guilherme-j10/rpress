@@ -134,6 +134,105 @@ routes.add(":get/admin/dashboard", |_req: RequestPayload| async move {
 });
 ```
 
+## Observability (Distributed Tracing)
+
+Rpress automatically creates structured [tracing](https://docs.rs/tracing) spans for every request. This makes the framework compatible with distributed tracing backends like **Jaeger**, **Datadog**, **Grafana Tempo**, and **Zipkin** out of the box.
+
+### Automatic spans
+
+Every incoming request is wrapped in an `http.request` span with these fields:
+
+| Field | Description |
+|-------|-------------|
+| `http.method` | HTTP method (GET, POST, etc.) |
+| `http.route` | Request URI path |
+| `http.request_id` | Unique UUID v4 (same as X-Request-ID header) |
+| `http.status_code` | Response status code (recorded after handler completes) |
+| `http.latency_ms` | Total processing time in milliseconds |
+
+Each connection also gets a parent span:
+
+| Span | Fields | Description |
+|------|--------|-------------|
+| `http.connection` | `peer.addr` | Per-connection span (HTTP/1.1 and TLS) |
+| `h2.stream` | — | Per-stream span for HTTP/2 multiplexed streams |
+
+The hierarchy looks like this:
+
+```
+http.connection (peer.addr=192.168.1.10)
+  └── http.request (method=GET, route=/users/1, request_id=abc-123, status_code=200, latency_ms=3)
+        └── app.request (your middleware span)
+              └── tracing::info!("...")   ← inherits full context
+```
+
+Any `tracing::info!`, `tracing::warn!`, or `tracing::error!` emitted inside a middleware or handler automatically inherits the parent span context — no manual propagation needed.
+
+### Adding custom fields in middleware
+
+The framework span already exists when your middleware runs. Create a child span to add application-specific fields:
+
+```rust
+app.use_middleware(|req, next| async move {
+    let uri = req.uri().to_string();
+    let method = req.method().to_string();
+
+    let span = tracing::info_span!(
+        "app.request",
+        app.route = %uri,
+        app.method = %method,
+        app.user_id = tracing::field::Empty,
+    );
+    let _guard = span.enter();
+
+    tracing::info!("processing request");
+    let result = next(req).await;
+
+    // After authentication, record the user:
+    // tracing::Span::current().record("app.user_id", &"user-123");
+
+    result
+});
+```
+
+### Exporting to Jaeger / Datadog / Tempo
+
+Rpress uses the standard `tracing` crate. To export spans to a distributed tracing backend, configure `tracing-subscriber` with an OpenTelemetry layer in your `main()`:
+
+```rust
+// Cargo.toml:
+// tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+// opentelemetry = "0.27"
+// opentelemetry-otlp = "0.27"
+// tracing-opentelemetry = "0.28"
+
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_otlp::WithExportConfig;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+fn init_tracing() {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint("http://localhost:4317")
+        .build()
+        .unwrap();
+
+    let provider = opentelemetry::sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build();
+
+    let tracer = provider.tracer("rpress-app");
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(telemetry)
+        .init();
+}
+```
+
+With this setup, every `http.request` span (and its children) is automatically exported as a trace to your backend. The `http.request_id` field matches the `X-Request-ID` response header, making it easy to correlate logs with traces.
+
 ## Request
 
 ### Accessing request data

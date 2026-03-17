@@ -1,3 +1,8 @@
+// Each test file is compiled as an independent binary. Any helper not used
+// in a given binary would generate dead_code warnings. The module-level
+// attribute suppresses them cleanly without annotating every item.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,7 +12,6 @@ use rpress::core::cors::RpressCors;
 use rpress::core::routes::RpressRoutes;
 use rpress::{Rpress, RpressTlsConfig};
 
-#[allow(dead_code)]
 pub struct TestResponse {
     pub status_code: u16,
     pub status_text: String,
@@ -16,7 +20,6 @@ pub struct TestResponse {
 }
 
 impl TestResponse {
-    #[allow(dead_code)]
     pub fn get_header(&self, key: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -24,7 +27,6 @@ impl TestResponse {
             .map(|(_, v)| v.as_str())
     }
 
-    #[allow(dead_code)]
     pub fn get_all_headers(&self, key: &str) -> Vec<&str> {
         self.headers
             .iter()
@@ -68,7 +70,6 @@ pub async fn send_raw_request(addr: &str, request: &str) -> String {
     String::from_utf8_lossy(&buf[..n]).to_string()
 }
 
-#[allow(dead_code)]
 pub async fn send_raw_request_bytes(addr: &str, request: &[u8]) -> Vec<u8> {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream.write_all(request).await.unwrap();
@@ -89,7 +90,6 @@ pub async fn send_raw_request_bytes(addr: &str, request: &[u8]) -> Vec<u8> {
     buf
 }
 
-#[allow(dead_code)]
 pub fn split_http_response_bytes(raw: &[u8]) -> (String, Vec<u8>) {
     let separator = b"\r\n\r\n";
     if let Some(pos) = raw.windows(4).position(|w| w == separator) {
@@ -108,7 +108,6 @@ pub async fn start_test_server(
     start_test_server_custom(cors, routes, |_| {}).await
 }
 
-#[allow(dead_code)]
 pub async fn start_test_server_custom<F: FnOnce(&mut Rpress)>(
     cors: Option<RpressCors>,
     routes: RpressRoutes,
@@ -131,7 +130,6 @@ pub async fn start_test_server_custom<F: FnOnce(&mut Rpress)>(
     (addr_str, handle)
 }
 
-#[allow(dead_code)]
 pub fn generate_test_tls_config() -> (RpressTlsConfig, Arc<rustls::ClientConfig>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls_pki_types::CertificateDer::from(cert.cert.der().to_vec());
@@ -155,7 +153,6 @@ pub fn generate_test_tls_config() -> (RpressTlsConfig, Arc<rustls::ClientConfig>
     (tls_config, Arc::new(client_config))
 }
 
-#[allow(dead_code)]
 pub async fn start_test_server_tls(
     cors: Option<RpressCors>,
     routes: RpressRoutes,
@@ -163,7 +160,6 @@ pub async fn start_test_server_tls(
     start_test_server_tls_custom(cors, routes, |_| {}).await
 }
 
-#[allow(dead_code)]
 pub async fn start_test_server_tls_custom<F: FnOnce(&mut Rpress)>(
     cors: Option<RpressCors>,
     routes: RpressRoutes,
@@ -188,7 +184,6 @@ pub async fn start_test_server_tls_custom<F: FnOnce(&mut Rpress)>(
     (addr_str, handle, client_config)
 }
 
-#[allow(dead_code)]
 pub async fn send_tls_request(
     addr: &str,
     request: &str,

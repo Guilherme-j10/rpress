@@ -72,6 +72,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, timeout};
+use tracing::Instrument;
 
 pub(crate) struct ResolvedResponse {
     pub payload: ResponsePayload,
@@ -471,7 +472,20 @@ impl Rpress {
             };
         };
 
+        let span = tracing::info_span!(
+            "http.request",
+            http.method = %meta.method,
+            http.route = %meta.uri,
+            http.request_id = %request_id,
+            http.status_code = tracing::field::Empty,
+            http.latency_ms = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+        let start = std::time::Instant::now();
+
         if meta.method == "OPTIONS" && self.cors.is_some() {
+            span.record("http.status_code", 204u16);
+            span.record("http.latency_ms", start.elapsed().as_millis() as u64);
             return ResolvedResponse {
                 payload: ResponsePayload::empty().with_status(StatusCode::NoContent),
                 request_id,
@@ -489,6 +503,8 @@ impl Rpress {
             RouteMatch::Found(handler, params, route_body_limit) => {
                 let effective_limit = route_body_limit.unwrap_or(self.max_body_size);
                 if req.payload.len() > effective_limit {
+                    span.record("http.status_code", 413u16);
+                    span.record("http.latency_ms", start.elapsed().as_millis() as u64);
                     return ResolvedResponse {
                         payload: ResponsePayload::empty().with_status(StatusCode::PayloadTooLarge),
                         request_id,
@@ -544,6 +560,9 @@ impl Rpress {
                 }
             }
         };
+
+        span.record("http.status_code", u16::from(payload.status));
+        span.record("http.latency_ms", start.elapsed().as_millis() as u64);
 
         ResolvedResponse {
             payload,
@@ -838,6 +857,11 @@ impl Rpress {
                     let server = arc_self.clone();
                     let acceptor = tls_acceptor.clone();
 
+                    let conn_span = tracing::info_span!(
+                        "http.connection",
+                        peer.addr = %addr,
+                    );
+
                     tracker.spawn(async move {
                         let _permit = permit;
 
@@ -863,7 +887,7 @@ impl Rpress {
                         } else {
                             server.handle_h1_connection(socket, addr).await;
                         }
-                    });
+                    }.instrument(conn_span));
                 }
                 _ = &mut shutdown => {
                     tracing::info!("Shutdown signal received, waiting for active connections...");

@@ -5,6 +5,7 @@ use bytes::Bytes;
 use h2::server;
 use http::{Response, StatusCode as HttpStatusCode};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::Instrument;
 
 use crate::Rpress;
 use crate::types::definitions::{RequestMetadata, RequestPayload};
@@ -93,9 +94,10 @@ pub(crate) async fn handle_h2_connection<S: AsyncRead + AsyncWrite + Unpin>(
         };
 
         let server = Arc::clone(server);
+        let stream_span = tracing::info_span!("h2.stream");
         tokio::spawn(async move {
             handle_h2_stream(&server, request, respond, max_body_size).await;
-        });
+        }.instrument(stream_span));
     }
 }
 

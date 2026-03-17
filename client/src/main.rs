@@ -6,6 +6,7 @@ use rpress::{Rpress, RpressCors};
 use crate::db::DbPool;
 use crate::routes::examples::get_example_routes;
 use crate::routes::security::get_security_routes;
+use crate::routes::tracing_demo::get_tracing_routes;
 use crate::routes::upload::get_upload_routes;
 use crate::routes::user::get_user_routes;
 
@@ -53,16 +54,30 @@ async fn main() -> anyhow::Result<()> {
     app.enable_compression(true);
     app.serve_static("/assets", "./public");
 
+    // Rpress automatically creates an "http.request" span for every request
+    // with method, route, request_id, status_code, and latency_ms.
+    // This middleware adds an application-level child span with custom fields.
+    // Any tracing::info! inside this span (or deeper handlers) inherits the
+    // full context — visible in Jaeger, Datadog, Grafana Tempo, etc.
     app.use_middleware(|req, next| async move {
         let uri = req.uri().to_string();
         let method = req.method().to_string();
 
-        tracing::info!("--> {} {}", method, uri);
-        let start = std::time::Instant::now();
+        let span = tracing::info_span!(
+            "app.request",
+            app.route = %uri,
+            app.method = %method,
+            app.user_id = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
+        tracing::info!("processing request");
 
         let result = next(req).await;
 
-        tracing::info!("<-- {} {} ({:?})", method, uri, start.elapsed());
+        // After authentication middleware runs, you could record the user:
+        // tracing::Span::current().record("app.user_id", &"user-123");
+
         result
     });
 
@@ -78,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     app.add_route_group(get_upload_routes());
     app.add_route_group(get_example_routes());
     app.add_route_group(get_security_routes());
+    app.add_route_group(get_tracing_routes(db.clone()));
 
     // Start without TLS (HTTP/1.1 only). To enable HTTPS + HTTP/2:
     //
