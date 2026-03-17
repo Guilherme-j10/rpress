@@ -6,8 +6,8 @@ An async HTTP/1.1 and HTTP/2 framework in Rust, built on top of `tokio`. Designe
 
 - Trie-based routing (static, dynamic, multi-method)
 - Middleware (global and per route group)
-- **TLS nativo via rustls** (HTTPS com certificados PEM)
-- **HTTP/2 via h2** (negociação automática por ALPN sobre TLS)
+- **Native TLS via rustls** (HTTPS with PEM certificates)
+- **HTTP/2 via h2** (automatic ALPN negotiation over TLS)
 - Request body streaming via `mpsc::channel`
 - Automatic gzip/brotli compression
 - Native CORS with builder pattern and **fail-fast validation** (RFC compliance)
