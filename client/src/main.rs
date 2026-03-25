@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpress::{Rpress, RpressCors};
+use rpress::{Rpress, RpressCors, RpressIo, RpressSecurityHeaders};
 
 use crate::db::DbPool;
 use crate::routes::examples::get_example_routes;
@@ -54,6 +54,15 @@ async fn main() -> anyhow::Result<()> {
     app.enable_compression(true);
     app.serve_static("/assets", "./public");
 
+    app.set_security_headers(
+        RpressSecurityHeaders::new()
+            .content_security_policy("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+            .x_frame_options("DENY")
+            .x_xss_protection("1; mode=block")
+            .custom("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            .custom("Referrer-Policy", "strict-origin-when-cross-origin"),
+    );
+
     // Rpress automatically creates an "http.request" span for every request
     // with method, route, request_id, status_code, and latency_ms.
     // This middleware adds an application-level child span with custom fields.
@@ -94,6 +103,46 @@ async fn main() -> anyhow::Result<()> {
     app.add_route_group(get_example_routes());
     app.add_route_group(get_security_routes());
     app.add_route_group(get_tracing_routes(db.clone()));
+
+    // Socket.IO: real-time communication compatible with socket.io-client v4+.
+    // Supports WebSocket and HTTP long-polling transports, namespaces, rooms,
+    // event-based messaging (on/emit), acknowledgements, and broadcasting.
+    let io = RpressIo::new();
+    io.on_connection(|socket| async move {
+        tracing::info!("Socket.IO connected: {}", socket.id());
+
+        socket
+            .on("chat message", |socket, data| async move {
+                tracing::info!("chat message: {:?}", data);
+                socket.broadcast().emit("chat message", &data[0]).await;
+                None
+            })
+            .await;
+
+        socket
+            .on("join room", |socket, data| async move {
+                if let Some(room) = data.first().and_then(|v| v.as_str()) {
+                    socket.join(room).await;
+                    socket
+                        .to(room)
+                        .emit("user joined", &socket.id())
+                        .await;
+                }
+                None
+            })
+            .await;
+
+        socket
+            .on_disconnect(|socket| async move {
+                tracing::info!("Socket.IO disconnected: {}", socket.id());
+            })
+            .await;
+    });
+
+    // Custom namespace example:
+    // io.of("/admin").on_connection(|socket| async move { /* ... */ });
+
+    app.attach_socketio(io);
 
     // Start without TLS (HTTP/1.1 only). To enable HTTPS + HTTP/2:
     //

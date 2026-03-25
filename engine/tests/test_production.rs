@@ -766,3 +766,98 @@ async fn test_no_compression_disabled() {
 
     handle.abort();
 }
+
+// --- Security Headers ---
+
+#[tokio::test]
+async fn test_security_headers_injected() {
+    use rpress::RpressSecurityHeaders;
+
+    let mut routes = RpressRoutes::new();
+    routes.add(":get/secure", |_req: RequestPayload| async {
+        ResponsePayload::text("ok")
+    });
+
+    let (addr, handle) = start_test_server_custom(None, routes, |app| {
+        app.set_security_headers(
+            RpressSecurityHeaders::new()
+                .content_security_policy("default-src 'self'")
+                .x_frame_options("DENY")
+                .x_xss_protection("1; mode=block")
+                .custom("Permissions-Policy", "camera=()"),
+        );
+    }).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /secure HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    ).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.get_header("Content-Security-Policy").unwrap(), "default-src 'self'");
+    assert_eq!(resp.get_header("X-Frame-Options").unwrap(), "DENY");
+    assert_eq!(resp.get_header("X-XSS-Protection").unwrap(), "1; mode=block");
+    assert_eq!(resp.get_header("Permissions-Policy").unwrap(), "camera=()");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_security_headers_handler_override() {
+    use rpress::RpressSecurityHeaders;
+
+    let mut routes = RpressRoutes::new();
+    routes.add(":get/override", |_req: RequestPayload| async {
+        ResponsePayload::text("ok")
+            .with_header("Content-Security-Policy", "script-src 'unsafe-inline'")
+    });
+
+    let (addr, handle) = start_test_server_custom(None, routes, |app| {
+        app.set_security_headers(
+            RpressSecurityHeaders::new()
+                .content_security_policy("default-src 'self'")
+                .x_frame_options("SAMEORIGIN"),
+        );
+    }).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /override HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    ).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(
+        resp.get_header("Content-Security-Policy").unwrap(),
+        "script-src 'unsafe-inline'",
+        "Handler-set CSP must not be overridden"
+    );
+    assert_eq!(
+        resp.get_header("X-Frame-Options").unwrap(),
+        "SAMEORIGIN",
+        "X-Frame-Options should still be injected"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_no_security_headers_by_default() {
+    let mut routes = RpressRoutes::new();
+    routes.add(":get/plain", |_req: RequestPayload| async {
+        ResponsePayload::text("ok")
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /plain HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    ).await;
+    let resp = parse_response(&raw);
+    assert_eq!(resp.status_code, 200);
+    assert!(resp.get_header("Content-Security-Policy").is_none(), "No CSP without set_security_headers");
+    assert!(resp.get_header("X-Frame-Options").is_none(), "No X-Frame-Options without set_security_headers");
+    assert!(resp.get_header("X-XSS-Protection").is_none(), "No X-XSS-Protection without set_security_headers");
+
+    handle.abort();
+}

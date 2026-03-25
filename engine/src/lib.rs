@@ -64,6 +64,10 @@ pub use core::routes::RpressRoutes;
 pub use core::tls::RpressTlsConfig;
 /// Rate limiting trait and default in-memory implementation.
 pub use core::rate_limiter::{RateLimiter, InMemoryRateLimiter};
+/// Configurable HTTP security headers (CSP, X-Frame-Options, etc.).
+pub use core::security::RpressSecurityHeaders;
+/// Socket.IO server for real-time communication.
+pub use core::socketio::RpressIo;
 /// Request payload, result type alias, and HTTP status codes.
 pub use types::definitions::{RequestPayload, RpressResult, StatusCode};
 
@@ -91,6 +95,16 @@ pub(crate) struct ResolvedResponse {
     pub req_origin: Option<String>,
 }
 
+/// Result of trying to handle a request as Socket.IO.
+pub(crate) enum SioDispatch {
+    /// Not a Socket.IO request — proceed with normal routing.
+    NotSio,
+    /// Handled as Socket.IO polling — return this response.
+    Response(ResponsePayload),
+    /// WebSocket upgrade requested — `(engine_sid, sec_websocket_key)`.
+    WebSocketUpgrade(String, Option<String>),
+}
+
 /// Async HTTP/1.1 and HTTP/2 server with routing, middleware, compression, and more.
 ///
 /// Create an instance with [`Rpress::new`], configure it with builder methods, add route
@@ -112,6 +126,8 @@ pub struct Rpress {
     rate_limiter: Option<Arc<dyn RateLimiter>>,
     compression_enabled: bool,
     stream_threshold: usize,
+    security_headers: Option<RpressSecurityHeaders>,
+    socketio: Option<Arc<core::socketio::RpressIoInner>>,
 }
 
 impl Rpress {
@@ -137,6 +153,8 @@ impl Rpress {
             rate_limiter: None,
             compression_enabled: false,
             stream_threshold: 64 * 1024,
+            security_headers: None,
+            socketio: None,
         }
     }
 
@@ -213,6 +231,51 @@ impl Rpress {
     /// Sets the body size threshold (in bytes) above which request bodies are streamed.
     pub fn set_stream_threshold(&mut self, bytes: usize) {
         self.stream_threshold = bytes;
+    }
+
+    /// Registers security headers that are automatically injected into every response.
+    ///
+    /// Headers set by the handler via [`ResponsePayload::with_header`] take precedence
+    /// and will **not** be overridden by these defaults.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use rpress::{Rpress, RpressSecurityHeaders};
+    ///
+    /// let mut app = Rpress::new(None);
+    /// app.set_security_headers(
+    ///     RpressSecurityHeaders::new()
+    ///         .content_security_policy("default-src 'self'")
+    ///         .x_frame_options("DENY"),
+    /// );
+    /// ```
+    pub fn set_security_headers(&mut self, headers: RpressSecurityHeaders) {
+        self.security_headers = Some(headers);
+    }
+
+    /// Attaches a Socket.IO server for real-time communication.
+    ///
+    /// Once attached, requests to the Socket.IO path (default `/socket.io/`)
+    /// are intercepted and handled automatically — including HTTP long-polling
+    /// and WebSocket upgrade.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use rpress::{Rpress, RpressIo};
+    /// use std::sync::Arc;
+    ///
+    /// let io = RpressIo::new();
+    /// io.on_connection(|socket| async move {
+    ///     println!("Connected: {}", socket.id());
+    /// });
+    ///
+    /// let mut app = Rpress::new(None);
+    /// app.attach_socketio(io);
+    /// ```
+    pub fn attach_socketio(&mut self, io: RpressIo) {
+        self.socketio = Some(io.inner);
     }
 
     fn initialize_routes(&mut self) {
@@ -344,6 +407,20 @@ impl Rpress {
         }
     }
 
+    pub(crate) fn apply_security_headers(&self, payload: &mut ResponsePayload) {
+        if let Some(ref sec) = self.security_headers {
+            for (key, value) in sec.headers() {
+                let already_set = payload
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case(key));
+                if !already_set {
+                    payload.headers.push((key.clone(), value.clone()));
+                }
+            }
+        }
+    }
+
     fn resolve_accept_encoding(&self, req: &RequestPayload) -> Option<String> {
         if !self.compression_enabled {
             return None;
@@ -363,6 +440,7 @@ impl Rpress {
         accept_encoding: Option<&str>,
     ) {
         self.apply_cors_headers(&mut payload, req_origin);
+        self.apply_security_headers(&mut payload);
         payload.headers.push(("X-Request-ID".into(), request_id.into()));
 
         let mut response = Response::new(socket);
@@ -381,6 +459,7 @@ impl Rpress {
     ) {
         let mut payload = ResponsePayload::empty().with_status(status);
         self.apply_cors_headers(&mut payload, req_origin);
+        self.apply_security_headers(&mut payload);
         payload.headers.push(("X-Request-ID".into(), request_id.into()));
 
         let mut response = Response::new(socket);
@@ -460,6 +539,53 @@ impl Rpress {
             limiter.check(&ip, max_requests, window_secs).await
         } else {
             true
+        }
+    }
+
+    /// Checks if a parsed request targets the Socket.IO path and handles it.
+    pub(crate) async fn try_handle_socketio(&self, req: &RequestPayload) -> SioDispatch {
+        let sio = match &self.socketio {
+            Some(s) => s,
+            None => return SioDispatch::NotSio,
+        };
+
+        let meta = match &req.request_metadata {
+            Some(m) => m,
+            None => return SioDispatch::NotSio,
+        };
+
+        let sio_path = &sio.path;
+        if !meta.uri.starts_with(sio_path) && !meta.uri.starts_with(sio_path.trim_end_matches('/'))
+        {
+            return SioDispatch::NotSio;
+        }
+
+        let query = meta.query_path.as_str();
+
+        let has_upgrade = meta
+            .headers
+            .get("upgrade")
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+
+        let ws_key = meta.headers.get("sec-websocket-key").cloned();
+
+        let result = core::socketio::handler::handle_sio_request(
+            sio,
+            &meta.method,
+            &meta.uri,
+            query,
+            &req.payload,
+            has_upgrade,
+        )
+        .await;
+
+        match result {
+            core::socketio::handler::SioHttpResult::Response(payload) => {
+                SioDispatch::Response(payload)
+            }
+            core::socketio::handler::SioHttpResult::WebSocketUpgrade(sid) => {
+                SioDispatch::WebSocketUpgrade(sid, ws_key)
+            }
         }
     }
 
@@ -787,8 +913,68 @@ impl Rpress {
                 }
 
                 use_idle_timeout = buffer.is_empty();
+                let mut ws_upgrade_sid: Option<(String, Option<String>)> = None;
                 for req in current_requests {
-                    self.dispatch_route(req, &mut socket).await;
+                    match self.try_handle_socketio(&req).await {
+                        SioDispatch::NotSio => {
+                            self.dispatch_route(req, &mut socket).await;
+                        }
+                        SioDispatch::Response(payload) => {
+                            let request_id = uuid::Uuid::new_v4().to_string();
+                            let req_origin = req
+                                .request_metadata
+                                .as_ref()
+                                .and_then(|m| m.headers.get("origin").cloned());
+                            self.send_payload(
+                                payload,
+                                &mut socket,
+                                req_origin.as_deref(),
+                                false,
+                                &request_id,
+                                None,
+                            )
+                            .await;
+                        }
+                        SioDispatch::WebSocketUpgrade(sid, ws_key) => {
+                            ws_upgrade_sid = Some((sid, ws_key));
+                            break;
+                        }
+                    }
+                }
+                if let Some((sid, ws_key)) = ws_upgrade_sid {
+                    if let Some(ref sio) = self.socketio {
+                        let accept_value = ws_key
+                            .map(|k| core::socketio::transport::compute_ws_accept(&k))
+                            .unwrap_or_default();
+
+                        let upgrade_response = format!(
+                            "HTTP/1.1 101 Switching Protocols\r\n\
+                             Upgrade: websocket\r\n\
+                             Connection: Upgrade\r\n\
+                             Sec-WebSocket-Accept: {}\r\n\r\n",
+                            accept_value
+                        );
+                        if socket.write_all(upgrade_response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if socket.flush().await.is_err() {
+                            return;
+                        }
+
+                        let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                            socket,
+                            tokio_tungstenite::tungstenite::protocol::Role::Server,
+                            None,
+                        )
+                        .await;
+
+                        let sio_inner = sio.clone();
+                        core::socketio::handler::handle_websocket_connection(
+                            sio_inner, ws_stream, sid,
+                        )
+                        .await;
+                    }
+                    return;
                 }
             }
         }

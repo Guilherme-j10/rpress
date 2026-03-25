@@ -28,6 +28,11 @@ rustls-pemfile = "2"
 h2 = "0.4"
 http = "1"
 bytes = "1"
+tokio-tungstenite = "0.26"
+sha1 = "0.10"
+base64 = "0.22"
+dashmap = "6"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -41,3 +46,5 @@ tokio-rustls = "0.26"
 rustls-pki-types = "1"
 h2 = "0.4"
 http = "1"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"

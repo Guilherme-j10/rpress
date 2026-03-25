@@ -16,4 +16,8 @@ pub mod cors;
 pub mod tls;
 /// Pluggable rate limiting with a default in-memory implementation.
 pub mod rate_limiter;
+/// Configurable HTTP security headers (CSP, X-Frame-Options, etc.).
+pub mod security;
+/// Socket.IO server: Engine.IO v4 + Socket.IO protocol v5 with rooms, namespaces, and events.
+pub mod socketio;
 pub(crate) mod h2_handler;

@@ -142,6 +142,7 @@ async fn handle_h2_stream(
 
     let mut response_payload = resolved.payload;
     server.apply_cors_headers(&mut response_payload, resolved.req_origin.as_deref());
+    server.apply_security_headers(&mut response_payload);
     response_payload
         .headers
         .push(("x-request-id".into(), resolved.request_id));

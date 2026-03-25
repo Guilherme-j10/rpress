@@ -18,7 +18,7 @@ An async HTTP/1.1 and HTTP/2 framework in Rust, built on top of `tokio`. Designe
 - Graceful shutdown
 - Configurable timeouts (read and idle)
 - Concurrent connection limits
-- Automatic security headers (`X-Content-Type-Options: nosniff`)
+- Automatic security headers (`X-Content-Type-Options: nosniff`) with configurable CSP, X-Frame-Options, and more
 - Automatic request ID (`X-Request-ID`)
 
 ## Quick Start
@@ -825,7 +825,9 @@ Handlers can return:
 
 ## Security Headers
 
-Automatically applied to all responses:
+### Always Applied
+
+These headers are sent automatically on every response:
 
 | Header | Value |
 |--------|-------|
@@ -833,6 +835,37 @@ Automatically applied to all responses:
 | `X-Request-ID` | Unique UUID v4 per request |
 | `Server` | `Rpress/1.0` |
 | `Connection` | `keep-alive` |
+
+### Configurable Security Headers
+
+Use `RpressSecurityHeaders` to opt-in to additional security headers such as
+`Content-Security-Policy`, `X-Frame-Options`, `X-XSS-Protection`, and any custom
+header. These are injected into every response **unless** the handler already set
+the same header via `with_header()`.
+
+```rust
+use rpress::{Rpress, RpressSecurityHeaders};
+
+let mut app = Rpress::new(None);
+app.set_security_headers(
+    RpressSecurityHeaders::new()
+        .content_security_policy("default-src 'self'; script-src 'self'")
+        .x_frame_options("DENY")
+        .x_xss_protection("1; mode=block")
+        .custom("Permissions-Policy", "camera=(), microphone=()")
+        .custom("Referrer-Policy", "strict-origin-when-cross-origin"),
+);
+```
+
+If a handler needs a different policy for a specific route, it can override by
+setting the header directly:
+
+```rust
+ResponsePayload::html(page)
+    .with_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'")
+```
+
+The handler-set value takes priority and the global default is skipped for that header.
 
 ## Graceful Shutdown
 
@@ -852,6 +885,103 @@ The server responds to `SIGINT` (Ctrl+C):
 | Body (Content-Length) | Configurable per route group (default 10 MB) |
 | Individual chunk | 1 MB |
 | Connection buffer | Configurable (default 40 KB) |
+
+## Socket.IO (Real-time Communication)
+
+Rpress includes a built-in Socket.IO server compatible with `socket.io-client` v4+
+(Engine.IO v4, Socket.IO protocol v5). It supports HTTP long-polling and WebSocket
+transports, namespaces, rooms, event-based messaging, acknowledgements, and broadcasting.
+
+### Basic Setup
+
+```rust
+use rpress::{Rpress, RpressIo};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let io = RpressIo::new();
+
+    io.on_connection(|socket| async move {
+        println!("Connected: {}", socket.id());
+
+        socket.on("message", |socket, data| async move {
+            // Broadcast to all other sockets
+            socket.broadcast().emit("message", &data[0]).await;
+            None
+        }).await;
+
+        socket.on_disconnect(|socket| async move {
+            println!("Disconnected: {}", socket.id());
+        }).await;
+    });
+
+    let mut app = Rpress::new(None);
+    app.attach_socketio(io);
+    app.listen("0.0.0.0:3000").await
+}
+```
+
+### Namespaces
+
+```rust
+let io = RpressIo::new();
+
+// Default namespace "/"
+io.on_connection(|socket| async move { /* ... */ });
+
+// Custom namespace "/admin"
+io.of("/admin").on_connection(|socket| async move {
+    println!("Admin connected: {}", socket.id());
+});
+```
+
+### Rooms
+
+```rust
+socket.on("join_room", |socket, data| async move {
+    if let Some(room) = data.first().and_then(|v| v.as_str()) {
+        socket.join(room).await;
+        socket.to(room).emit("user_joined", &socket.id()).await;
+    }
+    None
+}).await;
+```
+
+### Acknowledgements
+
+```rust
+socket.on("greet", |_socket, data| async move {
+    let name = data.first().and_then(|v| v.as_str()).unwrap_or("world");
+    Some(serde_json::json!(format!("Hello, {}!", name)))
+}).await;
+```
+
+On the client side (JavaScript):
+
+```javascript
+socket.emit("greet", "Rpress", (response) => {
+    console.log(response); // "Hello, Rpress!"
+});
+```
+
+### Client Connection (JavaScript)
+
+```javascript
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:3000");
+
+socket.on("connect", () => {
+    console.log("Connected:", socket.id);
+});
+
+socket.emit("message", "Hello from client");
+
+socket.on("message", (data) => {
+    console.log("Received:", data);
+});
+```
 
 ## License
 
