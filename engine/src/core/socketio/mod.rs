@@ -11,6 +11,8 @@ pub(crate) mod transport;
 pub mod adapter;
 pub(crate) mod handler;
 
+pub use engine_io::EioConfig;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,7 +25,7 @@ use tokio::sync::RwLock;
 /// Sync RwLock for namespace configuration (registered before server starts).
 type NamespaceLock = std::sync::RwLock<HashMap<String, NamespaceConfig>>;
 
-use engine_io::{EioConfig, EioPacket, EioPacketType, EioSessionStore};
+use engine_io::{EioPacket, EioPacketType, EioSessionStore};
 use room::RoomManager;
 use socket::Socket;
 use socket_io::SioPacket;

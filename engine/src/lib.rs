@@ -68,6 +68,7 @@ pub use core::rate_limiter::{RateLimiter, InMemoryRateLimiter};
 pub use core::security::RpressSecurityHeaders;
 /// Socket.IO server for real-time communication.
 pub use core::socketio::RpressIo;
+pub use core::socketio::EioConfig;
 /// Request payload, result type alias, and HTTP status codes.
 pub use types::definitions::{RequestPayload, RpressResult, StatusCode};
 
@@ -759,7 +760,15 @@ impl Rpress {
                         Ok(Ok(0)) => break,
                         Ok(Ok(n)) => n,
                         Ok(Err(e)) => {
-                            tracing::error!("Socket read error: {}", e);
+                            let kind = e.kind();
+                            if kind == std::io::ErrorKind::ConnectionReset
+                                || kind == std::io::ErrorKind::BrokenPipe
+                                || kind == std::io::ErrorKind::ConnectionAborted
+                            {
+                                tracing::debug!("Client disconnected: {} ({})", addr, kind);
+                            } else {
+                                tracing::error!("Socket read error: {}", e);
+                            }
                             break;
                         }
                         Err(_) => {

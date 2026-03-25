@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["engine", "client"]
+members = ["engine", "client", "rpress-client"]
+exclude = ["bench"]
 
 [workspace.dependencies]
 tokio = { version = "1.49.0", features = ["full"] }

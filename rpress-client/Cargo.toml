@@ -1,0 +1,20 @@
+[package]
+name = "rpress-client"
+version = "0.1.0"
+edition = "2024"
+description = "Socket.IO client SDK for Rust — connect to Rpress or any Socket.IO v4+ server"
+license = "MIT"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+rpress = { path = "../engine" }
+tracing-subscriber = { workspace = true }

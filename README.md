@@ -983,6 +983,87 @@ socket.on("message", (data) => {
 });
 ```
 
+### Client Connection (Rust — `rpress-client`)
+
+For server-to-server communication, use the `rpress-client` crate to connect from Rust:
+
+```toml
+[dependencies]
+rpress-client = "0.1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+```
+
+```rust
+use rpress_client::SocketIoClient;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Connect to default namespace "/"
+    let client = SocketIoClient::connect("http://localhost:3000").await?;
+
+    // Listen for events
+    client.on("chat message", |data| async move {
+        println!("Received: {:?}", data);
+    }).await;
+
+    // Emit events
+    client.emit("chat message", &serde_json::json!("Hello from Rust!")).await?;
+
+    // Emit with acknowledgement
+    let ack = client.emit_with_ack("greet", &serde_json::json!("Rpress")).await?;
+    println!("Ack: {:?}", ack);
+
+    // Connect to a custom namespace
+    let admin = SocketIoClient::connect_to("http://localhost:3000", "/admin").await?;
+    admin.emit("status", &serde_json::json!("online")).await?;
+
+    // Disconnect
+    client.disconnect().await?;
+    admin.disconnect().await?;
+    Ok(())
+}
+```
+
+## Benchmarks
+
+Load tested on a single machine with [oha](https://github.com/hatoo/oha) (HTTP) and [Artillery](https://www.artillery.io/) (Socket.IO). All tests run against a release build of the benchmark server included in `bench/`.
+
+### HTTP Performance
+
+| Scenario | Requests | Concurrency | Req/sec | p50 | p99 | Success |
+|---|---|---|---|---|---|---|
+| Warmup | 1,000 | 50 | **85,422** | 0.37ms | 1.79ms | 100% |
+| Max Throughput | 50,000 | 500 | **144,126** | 2.91ms | 10.91ms | 100% |
+| JSON Serialization | 20,000 | 200 | **30,528** | 6.13ms | 15.03ms | 100% |
+| POST Echo (1KB body) | 20,000 | 200 | **28,886** | 6.51ms | 16.48ms | 100% |
+| Large Body + Compression | 10,000 | 100 | **1,840** | 53.30ms | 108.01ms | 100% |
+| Static File (32KB CSS) | 10,000 | 100 | **10,295** | 9.01ms | 22.52ms | 100% |
+| Extreme Concurrency | 10,000 | 1,000 | **94,558** | 6.19ms | 35.60ms | 100% |
+| Sustained Load (60s) | 1,854,463 | 200 | **30,906** | 6.10ms | 15.69ms | 100% |
+
+### Socket.IO Performance
+
+| Metric | Value |
+|---|---|
+| Virtual Users | 520 created, 520 completed, **0 failed** |
+| Scenarios | Ping-Pong (60%), Room Join (30%), Broadcast Storm (10%) |
+| Total Emits | 3,567 |
+| Peak Emit Rate | 135/sec |
+| Session Length (median) | 2.0s |
+| Total Test Time | 1 min 10s |
+
+### Stress Tests
+
+| Test | Result | Detail |
+|---|---|---|
+| Connection Limit (5,000 vs 4,096 max) | **PASS** | 4,883 successful, excess gracefully rejected |
+| Slowloris (20 slow connections) | **PASS** | Server remained responsive |
+| Oversized Body (15MB vs 10MB limit) | **PASS** | Returned 413 Payload Too Large |
+| Post-Stress Health Check | **PASS** | 10/10 checks passed |
+
+All scenarios are configurable via environment variables. See [`bench/README.md`](bench/README.md) for details on running your own benchmarks.
+
 ## License
 
 MIT

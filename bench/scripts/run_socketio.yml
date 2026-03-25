@@ -1,0 +1,70 @@
+config:
+  target: "http://127.0.0.1:9090"
+  phases:
+    - name: "Ramp-up"
+      duration: 20
+      arrivalRate: 2
+      rampTo: 20
+    - name: "Sustained Load"
+      duration: 15
+      arrivalRate: 20
+  engines:
+    socketio-v3:
+      transports: ["websocket"]
+
+scenarios:
+  - name: "Ping-Pong Event"
+    weight: 60
+    engine: socketio-v3
+    flow:
+      - emit:
+          channel: "ping"
+          data: "load-test-ping"
+      - think: 0.3
+      - emit:
+          channel: "ping"
+          data: "load-test-ping-2"
+      - think: 0.3
+      - emit:
+          channel: "ping"
+          data: "load-test-ping-3"
+      - think: 0.3
+      - emit:
+          channel: "ping"
+          data: "load-test-ping-4"
+      - think: 0.3
+      - emit:
+          channel: "ping"
+          data: "load-test-ping-5"
+      - think: 0.5
+
+  - name: "Room Join and Message"
+    weight: 30
+    engine: socketio-v3
+    flow:
+      - emit:
+          channel: "join_room"
+          data: "bench-room"
+      - think: 0.5
+      - loop:
+          - emit:
+              channel: "room_msg"
+              data:
+                - "bench-room"
+                - "hello from load test"
+          - think: 0.3
+        count: 5
+      - think: 0.5
+
+  - name: "Broadcast Storm"
+    weight: 10
+    engine: socketio-v3
+    flow:
+      - think: 0.5
+      - loop:
+          - emit:
+              channel: "broadcast"
+              data: "broadcast-payload-from-load-test"
+          - think: 0.05
+        count: 20
+      - think: 0.5
