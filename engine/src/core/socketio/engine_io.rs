@@ -121,6 +121,14 @@ pub struct EioConfig {
     pub ping_interval: Duration,
     pub ping_timeout: Duration,
     pub max_payload: usize,
+    /// When `true`, the server rejects HTTP long-polling connections and only
+    /// accepts WebSocket transport. This eliminates the need for sticky sessions
+    /// in multi-instance deployments (Kubernetes, load balancers) because all
+    /// communication happens over a single persistent WebSocket connection.
+    ///
+    /// Clients must connect with `{ transports: ["websocket"] }`.
+    /// Defaults to `false` (both polling and WebSocket are accepted).
+    pub websocket_only: bool,
 }
 
 impl Default for EioConfig {
@@ -129,6 +137,7 @@ impl Default for EioConfig {
             ping_interval: Duration::from_secs(25),
             ping_timeout: Duration::from_secs(20),
             max_payload: 1_000_000,
+            websocket_only: false,
         }
     }
 }
@@ -188,7 +197,11 @@ impl EioSessionStore {
     pub fn get_handshake_data(&self, sid: &str) -> Option<EioHandshake> {
         self.sessions.get(sid).map(|_| EioHandshake {
             sid: sid.to_string(),
-            upgrades: vec!["websocket".to_string()],
+            upgrades: if self.config.websocket_only {
+                vec![]
+            } else {
+                vec!["websocket".to_string()]
+            },
             ping_interval: self.config.ping_interval.as_millis() as u64,
             ping_timeout: self.config.ping_timeout.as_millis() as u64,
             max_payload: self.config.max_payload,

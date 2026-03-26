@@ -55,7 +55,7 @@ impl SocketIoClient {
     ///
     /// * `url` — The server URL, e.g. `"http://localhost:3000"`.
     pub async fn connect(url: &str) -> Result<Self> {
-        Self::connect_to(url, "/").await
+        Self::connect_inner(url, "/", None).await
     }
 
     /// Connects to a Socket.IO server on a specific namespace.
@@ -65,13 +65,50 @@ impl SocketIoClient {
     /// * `url` — The server URL.
     /// * `namespace` — The namespace to connect to (e.g. `"/admin"`).
     pub async fn connect_to(url: &str, namespace: &str) -> Result<Self> {
+        Self::connect_inner(url, namespace, None).await
+    }
+
+    /// Connects to a Socket.IO server on the default namespace (`/`) with authentication data.
+    ///
+    /// The `auth` payload is sent inside the Socket.IO CONNECT packet and validated
+    /// by the server's [`AuthHandler`](rpress::AuthHandler) if one is configured.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use rpress_client::SocketIoClient;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = SocketIoClient::connect_with_auth(
+    ///     "http://localhost:3000",
+    ///     serde_json::json!({"token": "my-jwt-token"}),
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn connect_with_auth(url: &str, auth: Value) -> Result<Self> {
+        Self::connect_inner(url, "/", Some(auth)).await
+    }
+
+    /// Connects to a Socket.IO server on a specific namespace with authentication data.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` — The server URL.
+    /// * `namespace` — The namespace to connect to (e.g. `"/admin"`).
+    /// * `auth` — JSON payload sent in the CONNECT packet for server-side validation.
+    pub async fn connect_to_with_auth(url: &str, namespace: &str, auth: Value) -> Result<Self> {
+        Self::connect_inner(url, namespace, Some(auth)).await
+    }
+
+    async fn connect_inner(url: &str, namespace: &str, auth: Option<Value>) -> Result<Self> {
         let handle = transport::connect(url, namespace).await?;
 
         let engine_sid = handle.handshake.sid.clone();
         let tx = handle.tx;
         let mut rx = handle.rx;
 
-        let sio_connect = SioPacket::connect(namespace, None);
+        let sio_connect = SioPacket::connect(namespace, auth);
         let eio_msg = EioPacket::new(EioPacketType::Message, Some(sio_connect.encode()));
         tx.send(eio_msg).await.context("failed to send SIO CONNECT")?;
 

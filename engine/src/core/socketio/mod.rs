@@ -10,6 +10,8 @@ pub mod room;
 pub(crate) mod transport;
 pub mod adapter;
 pub(crate) mod handler;
+#[cfg(feature = "redis")]
+pub mod redis_adapter;
 
 pub use engine_io::EioConfig;
 
@@ -25,6 +27,7 @@ use tokio::sync::RwLock;
 /// Sync RwLock for namespace configuration (registered before server starts).
 type NamespaceLock = std::sync::RwLock<HashMap<String, NamespaceConfig>>;
 
+use adapter::Adapter;
 use engine_io::{EioPacket, EioPacketType, EioSessionStore};
 use room::RoomManager;
 use socket::Socket;
@@ -54,15 +57,29 @@ pub type DisconnectHandler = Arc<
         + 'static,
 >;
 
+/// Type alias for authentication handler callbacks.
+///
+/// Receives the auth payload sent by the client in the CONNECT packet and
+/// returns `Ok(claims)` to allow the connection (claims are stored on the socket)
+/// or `Err(message)` to reject it with a CONNECT_ERROR.
+pub type AuthHandler = Arc<
+    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'static>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
 /// Configuration for a Socket.IO namespace.
 pub(crate) struct NamespaceConfig {
     pub connection_handler: Option<ConnectionHandler>,
+    pub auth_handler: Option<AuthHandler>,
 }
 
 impl Default for NamespaceConfig {
     fn default() -> Self {
         Self {
             connection_handler: None,
+            auth_handler: None,
         }
     }
 }
@@ -85,6 +102,32 @@ impl NamespaceBuilder {
         let config = namespaces.entry(self.namespace.clone()).or_default();
         config.connection_handler = Some(handler);
     }
+
+    /// Registers an authentication handler for this namespace.
+    ///
+    /// The handler receives the auth payload from the client's CONNECT packet
+    /// and must return `Ok(claims)` to allow the connection or `Err(message)`
+    /// to reject it. The returned claims are accessible via [`Socket::auth()`].
+    ///
+    /// ```rust,no_run
+    /// # use rpress::RpressIo;
+    /// let io = RpressIo::new();
+    /// io.use_auth(|auth| async move {
+    ///     let token = auth.get("token").and_then(|v| v.as_str())
+    ///         .ok_or("Missing token".to_string())?;
+    ///     Ok(serde_json::json!({"user_id": "123"}))
+    /// });
+    /// ```
+    pub fn use_auth<F, Fut>(&self, handler: F)
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        let handler: AuthHandler = Arc::new(move |data| Box::pin(handler(data)));
+        let mut namespaces = self.io.namespaces.write().unwrap();
+        let config = namespaces.entry(self.namespace.clone()).or_default();
+        config.auth_handler = Some(handler);
+    }
 }
 
 /// Stores per-socket event handlers and disconnect handler.
@@ -105,7 +148,7 @@ impl Default for SocketHandlers {
 pub(crate) struct RpressIoInner {
     pub(crate) namespaces: NamespaceLock,
     pub(crate) session_store: EioSessionStore,
-    pub(crate) room_manager: Arc<RoomManager>,
+    pub(crate) adapter: Arc<dyn Adapter>,
     pub(crate) socket_handlers: RwLock<HashMap<String, SocketHandlers>>,
     pub(crate) sockets: RwLock<HashMap<String, Arc<Socket>>>,
     pub(crate) config: EioConfig,
@@ -146,11 +189,11 @@ impl RpressIo {
 
     /// Creates a new Socket.IO server with custom Engine.IO configuration.
     pub fn with_config(config: EioConfig) -> Self {
-        let room_manager = Arc::new(RoomManager::new());
+        let adapter: Arc<dyn Adapter> = Arc::new(RoomManager::new());
         let inner = Arc::new(RpressIoInner {
             namespaces: std::sync::RwLock::new(HashMap::new()),
             session_store: EioSessionStore::new(config.clone()),
-            room_manager,
+            adapter,
             socket_handlers: RwLock::new(HashMap::new()),
             sockets: RwLock::new(HashMap::new()),
             config,
@@ -170,6 +213,61 @@ impl RpressIo {
         };
     }
 
+    /// Replaces the default in-memory adapter with a custom one.
+    ///
+    /// Must be called before [`Rpress::attach_socketio`](crate::Rpress::attach_socketio).
+    /// Use this to plug in a [`RedisAdapter`] for horizontal scaling.
+    pub fn set_adapter<A: Adapter>(&mut self, adapter: A) {
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("set_adapter must be called before attach_socketio");
+        inner.adapter = Arc::new(adapter);
+    }
+
+    /// Creates a Socket.IO server backed by Redis for horizontal scaling.
+    ///
+    /// Equivalent to creating a `RpressIo::new()` then calling `set_adapter`
+    /// with a [`RedisAdapter`](redis_adapter::RedisAdapter).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use rpress::RpressIo;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let io = RpressIo::with_redis("redis://127.0.0.1:6379").await?;
+    /// io.on_connection(|socket| async move {
+    ///     println!("Connected: {}", socket.id());
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "redis")]
+    pub async fn with_redis(redis_url: &str) -> anyhow::Result<Self> {
+        Self::with_redis_config(redis_url, EioConfig::default()).await
+    }
+
+    /// Creates a Socket.IO server backed by Redis with custom Engine.IO configuration.
+    #[cfg(feature = "redis")]
+    pub async fn with_redis_config(redis_url: &str, config: EioConfig) -> anyhow::Result<Self> {
+        let adapter = redis_adapter::RedisAdapter::new(redis_url).await?;
+        let adapter = Arc::new(adapter);
+
+        adapter.start_subscriber();
+
+        let dyn_adapter: Arc<dyn Adapter> = adapter;
+        let inner = Arc::new(RpressIoInner {
+            namespaces: std::sync::RwLock::new(HashMap::new()),
+            session_store: EioSessionStore::new(config.clone()),
+            adapter: dyn_adapter,
+            socket_handlers: RwLock::new(HashMap::new()),
+            sockets: RwLock::new(HashMap::new()),
+            config,
+            path: "/socket.io/".to_string(),
+        });
+
+        Ok(Self { inner })
+    }
+
     /// Registers a connection handler for the default namespace (`/`).
     pub fn on_connection<F, Fut>(&self, handler: F)
     where
@@ -177,6 +275,17 @@ impl RpressIo {
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.of("/").on_connection(handler);
+    }
+
+    /// Registers an authentication handler for the default namespace (`/`).
+    ///
+    /// See [`NamespaceBuilder::use_auth`] for details.
+    pub fn use_auth<F, Fut>(&self, handler: F)
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        self.of("/").use_auth(handler);
     }
 
     /// Returns a [`NamespaceBuilder`] for configuring a specific namespace.
@@ -193,7 +302,7 @@ impl RpressIo {
         let sio_pkt = SioPacket::event("/", event, &value, None);
         let eio_pkt = EioPacket::new(EioPacketType::Message, Some(sio_pkt.encode()));
         self.inner
-            .room_manager
+            .adapter
             .broadcast_namespace("/", &eio_pkt, None)
             .await;
     }

@@ -1025,6 +1025,243 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+### Authentication
+
+Protect Socket.IO connections by registering an authentication handler. The handler
+receives the `auth` payload from the client's CONNECT packet and must return
+`Ok(claims)` to allow the connection or `Err(message)` to reject it with a
+`CONNECT_ERROR`. The returned claims are accessible on the socket via `socket.auth()`.
+
+**Server (Rust):**
+
+```rust
+use rpress::{Rpress, RpressIo};
+use std::sync::Arc;
+
+let io = RpressIo::new();
+
+// Register auth handler for the default namespace
+io.use_auth(|auth| async move {
+    let token = auth.get("token").and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing token".to_string())?;
+
+    // Validate the token (e.g. JWT verification)
+    if token == "valid-secret" {
+        Ok(serde_json::json!({"user_id": "123", "role": "admin"}))
+    } else {
+        Err("Unauthorized".to_string())
+    }
+});
+
+io.on_connection(|socket| async move {
+    let user_id = socket.auth().get("user_id").and_then(|v| v.as_str());
+    println!("Authenticated user: {}", user_id.unwrap_or("unknown"));
+
+    socket.on("admin_action", |socket, data| async move {
+        if socket.auth().get("role").and_then(|v| v.as_str()) == Some("admin") {
+            socket.broadcast().emit("notification", &data[0]).await;
+        }
+        None
+    }).await;
+});
+
+// Per-namespace auth is also supported:
+io.of("/admin").use_auth(|auth| async move {
+    let token = auth.get("token").and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing token".to_string())?;
+    // Stricter validation for /admin namespace...
+    Ok(serde_json::json!({"admin": true}))
+});
+```
+
+**Client (JavaScript):**
+
+```javascript
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:3000", {
+    auth: { token: "valid-secret" }
+});
+
+socket.on("connect", () => {
+    console.log("Authenticated and connected:", socket.id);
+});
+
+socket.on("connect_error", (err) => {
+    console.error("Auth failed:", err.message);
+});
+```
+
+**Client (Rust — `rpress-client`):**
+
+```rust
+use rpress_client::SocketIoClient;
+
+// Connect with authentication
+let client = SocketIoClient::connect_with_auth(
+    "http://localhost:3000",
+    serde_json::json!({"token": "valid-secret"}),
+).await?;
+
+// Connect to a specific namespace with auth
+let admin = SocketIoClient::connect_to_with_auth(
+    "http://localhost:3000",
+    "/admin",
+    serde_json::json!({"token": "admin-secret"}),
+).await?;
+```
+
+Without an auth handler configured, connections are accepted without validation
+(backward compatible).
+
+### Scaling with Redis
+
+By default, Rpress uses an in-memory adapter for room management and broadcasting.
+This works perfectly for a single server instance, but when running multiple replicas
+behind a load balancer (e.g. Kubernetes), broadcasts on one Pod won't reach sockets
+connected to another Pod.
+
+Enable the `redis` feature to use Redis Pub/Sub for cross-instance broadcasting:
+
+```toml
+[dependencies]
+rpress = { version = "0.5", features = ["redis"] }
+```
+
+**Server setup:**
+
+```rust
+use rpress::{Rpress, RpressIo};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let io = RpressIo::with_redis("redis://127.0.0.1:6379").await?;
+
+    io.on_connection(|socket| async move {
+        println!("Connected: {}", socket.id());
+        socket.on("message", |socket, data| async move {
+            // This broadcast reaches ALL connected clients,
+            // even those on different server instances
+            socket.broadcast().emit("message", &data[0]).await;
+            None
+        }).await;
+    });
+
+    let mut app = Rpress::new(None);
+    app.attach_socketio(io);
+    app.listen("0.0.0.0:3000").await
+}
+```
+
+You can also use a custom adapter with `set_adapter`:
+
+```rust
+use rpress::{RpressIo, RedisAdapter};
+
+let adapter = RedisAdapter::new("redis://my-redis-cluster:6379").await?;
+let mut io = RpressIo::new();
+io.set_adapter(adapter);
+```
+
+**Deploying with Multiple Replicas (Kubernetes / Load Balancers)**
+
+Engine.IO starts connections via HTTP long-polling before upgrading to WebSocket.
+In a multi-replica deployment, successive polling requests from the same client may
+be routed to different Pods by the load balancer, causing `"Session ID unknown"` errors.
+
+There are two solutions:
+
+**Option A: WebSocket-only mode (recommended)**
+
+Force all clients to connect directly via WebSocket, bypassing long-polling entirely.
+This eliminates the sticky session requirement because WebSocket is a single persistent
+connection that stays on the same Pod.
+
+Server:
+
+```rust
+use rpress::{Rpress, RpressIo, EioConfig};
+
+let config = EioConfig {
+    websocket_only: true,
+    ..EioConfig::default()
+};
+let io = RpressIo::with_config(config);
+```
+
+Client (JavaScript):
+
+```javascript
+const socket = io("https://api.example.com", {
+  transports: ["websocket"],  // skip long-polling
+});
+```
+
+Client (Rust — rpress-client):
+
+```rust
+// rpress-client connects via WebSocket by default — no changes needed
+let client = SocketIoClient::connect("http://localhost:3000").await?;
+```
+
+When `websocket_only` is enabled, the server rejects any long-polling request with
+a clear error message instructing the client to use WebSocket transport.
+
+**Option B: Sticky sessions**
+
+If you need long-polling support (e.g. for clients behind restrictive proxies that
+block WebSocket), configure your load balancer with session affinity so that all
+requests from the same client reach the same Pod.
+
+Nginx example:
+
+```nginx
+upstream rpress_backend {
+    ip_hash;  # sticky sessions by client IP
+    server pod1:3000;
+    server pod2:3000;
+}
+
+server {
+    location /socket.io/ {
+        proxy_pass http://rpress_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+Kubernetes Ingress (nginx-ingress) example:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "RPRESS_AFFINITY"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "172800"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /socket.io/
+            pathType: Prefix
+            backend:
+              service:
+                name: rpress-service
+                port:
+                  number: 3000
+```
+
+The Redis adapter handles only cross-instance broadcast synchronization. Room
+membership, socket state, and Engine.IO sessions remain local to each instance,
+which is why sticky sessions (or WebSocket-only mode) are required.
+
 ## Benchmarks
 
 Load tested on a single machine with [oha](https://github.com/hatoo/oha) (HTTP) and [Artillery](https://www.artillery.io/) (Socket.IO). All tests run against a release build of the benchmark server included in `bench/`.

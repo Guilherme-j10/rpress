@@ -61,6 +61,14 @@ pub(crate) async fn handle_sio_request(
         );
     }
 
+    if inner.config.websocket_only {
+        return SioHttpResult::Response(
+            ResponsePayload::text(r#"{"code":3,"message":"Polling transport disabled. Use WebSocket: { transports: [\"websocket\"] }"}"#)
+                .with_status(StatusCode::BadRequest)
+                .with_content_type("application/json"),
+        );
+    }
+
     match (method, params.sid.as_deref()) {
         ("GET", None) => handle_polling_handshake(inner).await,
         ("GET", Some(sid)) => handle_polling_get(inner, sid).await,
@@ -251,16 +259,19 @@ async fn process_sio_packet(inner: &Arc<RpressIoInner>, engine_sid: &str, pkt: &
     }
 }
 
-/// Handles Socket.IO CONNECT: creates a socket, joins namespace, calls connection handler.
+/// Handles Socket.IO CONNECT: validates auth, creates a socket, joins namespace, calls connection handler.
 async fn handle_sio_connect(
     inner: &Arc<RpressIoInner>,
     engine_sid: &str,
     namespace: &str,
-    _auth_data: Option<&Value>,
+    auth_data: Option<&Value>,
 ) {
-    let has_namespace = {
+    let (has_namespace, auth_handler) = {
         let namespaces = inner.namespaces.read().unwrap();
-        namespaces.contains_key(namespace)
+        match namespaces.get(namespace) {
+            Some(ns) => (true, ns.auth_handler.clone()),
+            None => (false, None),
+        }
     };
 
     let eio_tx = {
@@ -278,6 +289,22 @@ async fn handle_sio_connect(
         return;
     }
 
+    let auth_claims = if let Some(handler) = auth_handler {
+        let data = auth_data.cloned().unwrap_or(Value::Null);
+        match handler(data).await {
+            Ok(claims) => claims,
+            Err(msg) => {
+                tracing::debug!("Socket.IO auth rejected for namespace {}: {}", namespace, msg);
+                let err_pkt = SioPacket::connect_error(namespace, &msg);
+                let eio_pkt = EioPacket::new(EioPacketType::Message, Some(err_pkt.encode()));
+                let _ = eio_tx.send(eio_pkt).await;
+                return;
+            }
+        }
+    } else {
+        Value::Null
+    };
+
     let socket_id = uuid::Uuid::new_v4().to_string();
 
     let socket = Arc::new(Socket::new(
@@ -285,35 +312,31 @@ async fn handle_sio_connect(
         engine_sid.to_string(),
         namespace.to_string(),
         eio_tx.clone(),
-        inner.room_manager.clone(),
+        inner.adapter.clone(),
         inner.clone(),
+        auth_claims,
     ));
 
-    // Register sender for broadcast
     inner
-        .room_manager
+        .adapter
         .register_sender(&socket_id, eio_tx.clone())
         .await;
 
-    // Auto-join personal room
     inner
-        .room_manager
+        .adapter
         .join(namespace, &socket_id, &socket_id)
         .await;
 
-    // Store socket reference
     inner
         .sockets
         .write()
         .await
         .insert(socket_id.clone(), socket.clone());
 
-    // Send CONNECT response
     let connect_ok = SioPacket::connect_ok(namespace, &socket_id);
     let eio_pkt = EioPacket::new(EioPacketType::Message, Some(connect_ok.encode()));
     let _ = eio_tx.send(eio_pkt).await;
 
-    // Call connection handler
     let handler = {
         let namespaces = inner.namespaces.read().unwrap();
         namespaces
@@ -422,8 +445,8 @@ async fn cleanup_socket(inner: &Arc<RpressIoInner>, socket_id: &str) {
         socket.leave_all_rooms().await;
     }
 
-    inner.room_manager.leave_all(socket_id).await;
-    inner.room_manager.unregister_sender(socket_id).await;
+    inner.adapter.leave_all(socket_id).await;
+    inner.adapter.unregister_sender(socket_id).await;
     inner.socket_handlers.write().await.remove(socket_id);
 }
 

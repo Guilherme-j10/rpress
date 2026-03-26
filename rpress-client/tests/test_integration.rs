@@ -4,6 +4,7 @@ use std::time::Duration;
 use rpress::core::routes::RpressRoutes;
 use rpress::{Rpress, RpressIo};
 use rpress_client::SocketIoClient;
+use serde_json::json;
 use tokio::sync::Notify;
 
 async fn start_sio_server<F>(configure_io: F) -> (String, tokio::task::JoinHandle<()>)
@@ -202,5 +203,90 @@ async fn test_client_server_initiated_event() {
         .expect("did not receive welcome event");
 
     client.disconnect().await.unwrap();
+    handle.abort();
+}
+
+// --- Authentication tests ---
+
+#[tokio::test]
+async fn test_client_connect_with_auth_valid() {
+    let connected = Arc::new(Notify::new());
+    let connected_clone = connected.clone();
+
+    let (addr, handle) = start_sio_server(move |io| {
+        io.use_auth(|auth| async move {
+            let token = auth
+                .get("token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing token".to_string())?;
+            if token == "secret-123" {
+                Ok(json!({"user": "alice"}))
+            } else {
+                Err("Bad token".to_string())
+            }
+        });
+        let connected = connected_clone.clone();
+        io.on_connection(move |_socket| {
+            let connected = connected.clone();
+            async move {
+                connected.notify_one();
+            }
+        });
+    })
+    .await;
+
+    let client = SocketIoClient::connect_with_auth(
+        &format!("http://{}", addr),
+        json!({"token": "secret-123"}),
+    )
+    .await
+    .expect("connect_with_auth should succeed");
+
+    assert!(client.is_connected());
+
+    tokio::time::timeout(Duration::from_secs(2), connected.notified())
+        .await
+        .expect("on_connection was not called");
+
+    client.disconnect().await.unwrap();
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_client_connect_with_auth_invalid() {
+    let (addr, handle) = start_sio_server(|io| {
+        io.use_auth(|auth| async move {
+            let token = auth
+                .get("token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing token".to_string())?;
+            if token == "secret-123" {
+                Ok(json!({}))
+            } else {
+                Err("Bad token".to_string())
+            }
+        });
+        io.on_connection(|_socket| async move {});
+    })
+    .await;
+
+    let result = SocketIoClient::connect_with_auth(
+        &format!("http://{}", addr),
+        json!({"token": "wrong-token"}),
+    )
+    .await;
+
+    match result {
+        Ok(_) => panic!("connect_with_auth should fail with bad token"),
+        Err(e) => {
+            let err_chain = format!("{e:?}");
+            assert!(
+                err_chain.contains("Bad token"),
+                "Error chain should contain rejection reason, got: {}",
+                err_chain
+            );
+        }
+    }
+
     handle.abort();
 }

@@ -69,6 +69,12 @@ pub use core::security::RpressSecurityHeaders;
 /// Socket.IO server for real-time communication.
 pub use core::socketio::RpressIo;
 pub use core::socketio::EioConfig;
+pub use core::socketio::AuthHandler;
+/// Pluggable adapter trait for Socket.IO room/broadcast backends.
+pub use core::socketio::adapter::Adapter;
+/// Redis-backed adapter for horizontal Socket.IO scaling.
+#[cfg(feature = "redis")]
+pub use core::socketio::redis_adapter::RedisAdapter;
 /// Request payload, result type alias, and HTTP status codes.
 pub use types::definitions::{RequestPayload, RpressResult, StatusCode};
 

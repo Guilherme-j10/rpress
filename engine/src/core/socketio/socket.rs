@@ -9,9 +9,9 @@ use tokio::sync::{mpsc, RwLock};
 
 use std::future::Future;
 
+use super::adapter::Adapter;
 use super::engine_io::EioPacket;
 use super::engine_io::EioPacketType;
-use super::room::RoomManager;
 use super::socket_io::SioPacket;
 use super::{
     EventHandler, DisconnectHandler, RpressIoInner,
@@ -29,8 +29,9 @@ pub struct Socket {
     rooms: RwLock<HashSet<String>>,
     /// Sends Engine.IO packets to the transport layer.
     eio_tx: mpsc::Sender<EioPacket>,
-    room_manager: Arc<RoomManager>,
+    adapter: Arc<dyn Adapter>,
     io_inner: Arc<RpressIoInner>,
+    auth: Value,
 }
 
 impl Socket {
@@ -39,8 +40,9 @@ impl Socket {
         engine_sid: String,
         namespace: String,
         eio_tx: mpsc::Sender<EioPacket>,
-        room_manager: Arc<RoomManager>,
+        adapter: Arc<dyn Adapter>,
         io_inner: Arc<RpressIoInner>,
+        auth: Value,
     ) -> Self {
         let mut initial_rooms = HashSet::new();
         initial_rooms.insert(id.clone());
@@ -51,8 +53,9 @@ impl Socket {
             namespace,
             rooms: RwLock::new(initial_rooms),
             eio_tx,
-            room_manager,
+            adapter,
             io_inner,
+            auth,
         }
     }
 
@@ -71,6 +74,15 @@ impl Socket {
         &self.namespace
     }
 
+    /// Returns the authentication claims stored during connection.
+    ///
+    /// If the server has an [`AuthHandler`](super::AuthHandler) configured,
+    /// this contains the `Ok(value)` returned by the handler.
+    /// Otherwise it is [`Value::Null`].
+    pub fn auth(&self) -> &Value {
+        &self.auth
+    }
+
     /// Returns the set of rooms this socket has joined.
     pub async fn rooms(&self) -> HashSet<String> {
         self.rooms.read().await.clone()
@@ -79,7 +91,7 @@ impl Socket {
     /// Joins a room.
     pub async fn join(&self, room: &str) {
         self.rooms.write().await.insert(room.to_string());
-        self.room_manager
+        self.adapter
             .join(&self.namespace, room, &self.id)
             .await;
     }
@@ -87,7 +99,7 @@ impl Socket {
     /// Leaves a room.
     pub async fn leave(&self, room: &str) {
         self.rooms.write().await.remove(room);
-        self.room_manager
+        self.adapter
             .leave(&self.namespace, room, &self.id)
             .await;
     }
@@ -121,7 +133,7 @@ impl Socket {
             namespace: self.namespace.clone(),
             exclude: Some(self.id.clone()),
             rooms: Vec::new(),
-            room_manager: self.room_manager.clone(),
+            adapter: self.adapter.clone(),
         }
     }
 
@@ -131,7 +143,7 @@ impl Socket {
             namespace: self.namespace.clone(),
             exclude: Some(self.id.clone()),
             rooms: vec![room.to_string()],
-            room_manager: self.room_manager.clone(),
+            adapter: self.adapter.clone(),
         }
     }
 
@@ -168,7 +180,7 @@ impl Socket {
     pub(crate) async fn leave_all_rooms(&self) {
         let rooms = self.rooms.read().await.clone();
         for room in rooms {
-            self.room_manager
+            self.adapter
                 .leave(&self.namespace, &room, &self.id)
                 .await;
         }
@@ -181,7 +193,7 @@ pub struct BroadcastBuilder {
     namespace: String,
     exclude: Option<String>,
     rooms: Vec<String>,
-    room_manager: Arc<RoomManager>,
+    adapter: Arc<dyn Adapter>,
 }
 
 impl BroadcastBuilder {
@@ -198,12 +210,12 @@ impl BroadcastBuilder {
         let eio_pkt = EioPacket::new(EioPacketType::Message, Some(sio_pkt.encode()));
 
         if self.rooms.is_empty() {
-            self.room_manager
+            self.adapter
                 .broadcast_namespace(&self.namespace, &eio_pkt, self.exclude.as_deref())
                 .await;
         } else {
             for room in &self.rooms {
-                self.room_manager
+                self.adapter
                     .broadcast_room(&self.namespace, room, &eio_pkt, self.exclude.as_deref())
                     .await;
             }
