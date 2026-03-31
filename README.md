@@ -134,6 +134,46 @@ routes.add(":get/admin/dashboard", |_req: RequestPayload| async move {
 });
 ```
 
+### Request extensions (middleware → handler data)
+
+Middleware often needs to pass extracted data (e.g. JWT claims) to downstream handlers. Use `set_extension` / `get_extension` on `RequestPayload`:
+
+```rust
+let mut public = RpressRoutes::new();
+public.add(":post/login", |_req: RequestPayload| async move {
+    ResponsePayload::json(&serde_json::json!({"token": "eyJ..."})).unwrap()
+});
+
+let mut protected = RpressRoutes::new();
+protected.use_middleware(|mut req, next| async move {
+    let token = req.header("authorization")
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .ok_or(RpressError {
+            status: StatusCode::Unauthorized,
+            message: "Missing token".into(),
+        })?;
+
+    // Validate JWT and extract claims...
+    let user_id = "42";    // from token
+    let tenant  = "acme";  // from token
+
+    req.set_extension("user_id", user_id);
+    req.set_extension("tenant_id", tenant);
+    next(req).await
+});
+
+protected.add(":get/me", |req: RequestPayload| async move {
+    let user_id  = req.get_extension("user_id").unwrap_or("?");
+    let tenant   = req.get_extension("tenant_id").unwrap_or("?");
+    ResponsePayload::text(format!("user={} tenant={}", user_id, tenant))
+});
+
+app.add_route_group(public);
+app.add_route_group(protected);
+```
+
+Extensions are plain `HashMap<String, String>` key-value pairs — lightweight and zero-cost when unused. Later middleware in the chain can overwrite values set by earlier middleware.
+
 ## Observability (Distributed Tracing)
 
 Rpress automatically creates structured [tracing](https://docs.rs/tracing) spans for every request. This makes the framework compatible with distributed tracing backends like **Jaeger**, **Datadog**, **Grafana Tempo**, and **Zipkin** out of the box.
@@ -257,6 +297,10 @@ routes.add(":post/api/data", |req: RequestPayload| async move {
     // Cookies
     let cookies = req.cookies();
     let session = cookies.get("session_id");
+
+    // Extensions (set by middleware, e.g. auth claims)
+    let user_id = req.get_extension("user_id");
+    let role = req.get_extension("role");
 
     // Body as string
     let body_text = req.body_str().unwrap_or("invalid utf8");
@@ -613,6 +657,11 @@ app.listen("0.0.0.0:3000").await?;             // HTTP
 // or
 let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
 app.listen_tls("0.0.0.0:443", tls).await?;     // HTTPS + HTTP/2
+
+// With a ready callback (like Express's app.listen(port, callback))
+app.listen_with("0.0.0.0:3000", || async {
+    println!("Server running on port 3000");
+}).await?;
 ```
 
 ## Controllers with the `handler!` macro

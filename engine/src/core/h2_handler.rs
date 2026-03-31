@@ -52,6 +52,7 @@ fn h2_parts_to_payload(
         payload: body,
         params: HashMap::default(),
         query,
+        extensions: HashMap::default(),
         body_receiver: None,
     }
 }

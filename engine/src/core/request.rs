@@ -210,6 +210,7 @@ pub(crate) fn parse_http_protocol(
                 payload,
                 params: HashMap::default(),
                 query: HashMap::default(),
+                extensions: HashMap::default(),
                 body_receiver: None,
             },
             consumed,
@@ -238,6 +239,7 @@ pub(crate) fn parse_http_protocol(
             payload,
             params: HashMap::default(),
             query: head.query,
+            extensions: HashMap::default(),
             body_receiver: None,
         },
         body_end,
@@ -325,6 +327,30 @@ impl RequestPayload {
     /// Returns a route parameter value by name (e.g. `:id` in `/users/:id`).
     pub fn get_param(&self, key: &str) -> Option<&str> {
         self.params.get(key).map(|s| s.as_str())
+    }
+
+    /// Stores a key-value pair in the request extensions.
+    ///
+    /// Designed for middleware to attach data that downstream handlers can read.
+    /// Typical use: an auth middleware validates a JWT and stores the extracted
+    /// claims so that handlers can access them without re-parsing the token.
+    ///
+    /// ```ignore
+    /// // In a middleware:
+    /// req.set_extension("user_id", "42");
+    /// req.set_extension("role", "admin");
+    /// next(req).await
+    ///
+    /// // In a handler:
+    /// let user_id = req.get_extension("user_id").unwrap();
+    /// ```
+    pub fn set_extension(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.extensions.insert(key.into(), value.into());
+    }
+
+    /// Returns an extension value previously set by middleware via [`set_extension`](Self::set_extension).
+    pub fn get_extension(&self, key: &str) -> Option<&str> {
+        self.extensions.get(key).map(|s| s.as_str())
     }
 
     /// Returns a query string parameter value by name.

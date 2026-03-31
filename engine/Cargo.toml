@@ -1,6 +1,6 @@
 [package]
 name = "rpress"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "Lightweight async HTTP/1.1 and HTTP/2 framework built on tokio with TLS (rustls), routing, middleware, streaming, compression, CORS and rate limiting"
 license = "MIT"

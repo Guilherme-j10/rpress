@@ -88,6 +88,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
@@ -827,6 +828,7 @@ impl Rpress {
                     payload: Vec::new(),
                     params: HashMap::default(),
                     query: parsed.query,
+                    extensions: HashMap::default(),
                     body_receiver: Some(rx),
                 };
 
@@ -1004,7 +1006,28 @@ impl Rpress {
         self.prepare_server();
         let listener = tokio::net::TcpListener::bind(addr.into()).await?;
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener, None).await
+        Self::run_server(&arc_self, listener, None, None).await
+    }
+
+    /// Binds to the given address and starts accepting connections, invoking the
+    /// async callback once the server is ready — similar to Express's
+    /// `app.listen(port, () => { … })`.
+    ///
+    /// ```ignore
+    /// app.listen_with("0.0.0.0:3000", || async {
+    ///     println!("Server running on port 3000");
+    /// }).await?;
+    /// ```
+    pub async fn listen_with<T, F, Fut>(mut self, addr: T, callback: F) -> anyhow::Result<()>
+    where
+        T: Into<String>,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.prepare_server();
+        let listener = tokio::net::TcpListener::bind(addr.into()).await?;
+        let arc_self = Arc::new(self);
+        Self::run_server(&arc_self, listener, None, Some(Box::pin(callback()))).await
     }
 
     /// Starts the server using an existing `TcpListener`.
@@ -1014,7 +1037,7 @@ impl Rpress {
     ) -> anyhow::Result<()> {
         self.prepare_server();
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener, None).await
+        Self::run_server(&arc_self, listener, None, None).await
     }
 
     /// Binds to the given address and starts accepting TLS connections.
@@ -1026,7 +1049,32 @@ impl Rpress {
         self.prepare_server();
         let listener = tokio::net::TcpListener::bind(addr.into()).await?;
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener, Some(tls_config.acceptor)).await
+        Self::run_server(&arc_self, listener, Some(tls_config.acceptor), None).await
+    }
+
+    /// Binds to the given address with TLS and invokes the async callback once ready.
+    ///
+    /// ```ignore
+    /// let tls = RpressTlsConfig::from_pem("cert.pem", "key.pem")?;
+    /// app.listen_tls_with("0.0.0.0:443", tls, || async {
+    ///     println!("HTTPS server running on port 443");
+    /// }).await?;
+    /// ```
+    pub async fn listen_tls_with<T, F, Fut>(
+        mut self,
+        addr: T,
+        tls_config: RpressTlsConfig,
+        callback: F,
+    ) -> anyhow::Result<()>
+    where
+        T: Into<String>,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.prepare_server();
+        let listener = tokio::net::TcpListener::bind(addr.into()).await?;
+        let arc_self = Arc::new(self);
+        Self::run_server(&arc_self, listener, Some(tls_config.acceptor), Some(Box::pin(callback()))).await
     }
 
     /// Starts the TLS server using an existing `TcpListener`.
@@ -1037,13 +1085,14 @@ impl Rpress {
     ) -> anyhow::Result<()> {
         self.prepare_server();
         let arc_self = Arc::new(self);
-        Self::run_server(&arc_self, listener, Some(tls_config.acceptor)).await
+        Self::run_server(&arc_self, listener, Some(tls_config.acceptor), None).await
     }
 
     async fn run_server(
         arc_self: &Arc<Self>,
         listener: tokio::net::TcpListener,
         tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+        on_ready: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     ) -> anyhow::Result<()> {
         let semaphore = Arc::new(Semaphore::new(arc_self.max_connections));
         let tracker = tokio_util::task::TaskTracker::new();
@@ -1054,6 +1103,10 @@ impl Rpress {
         let tls_acceptor = tls_acceptor.map(Arc::new);
 
         tracing::info!("Rpress server started");
+
+        if let Some(callback) = on_ready {
+            callback.await;
+        }
 
         loop {
             tokio::select! {

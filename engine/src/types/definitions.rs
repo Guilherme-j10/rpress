@@ -76,6 +76,10 @@ pub struct RequestMetadata {
 /// Use the helper methods ([`uri()`](RequestPayload::uri), [`method()`](RequestPayload::method),
 /// [`header()`](RequestPayload::header), [`get_param()`](RequestPayload::get_param), etc.)
 /// to access request data ergonomically.
+///
+/// Middleware can attach arbitrary key-value data via [`set_extension()`](RequestPayload::set_extension)
+/// and [`get_extension()`](RequestPayload::get_extension). This is useful for passing
+/// authentication claims (e.g. `user_id`, `role`) from an auth middleware to downstream handlers.
 pub struct RequestPayload {
     /// Parsed request metadata (method, URI, headers). `None` for chunked-only frames.
     pub request_metadata: Option<RequestMetadata>,
@@ -85,6 +89,9 @@ pub struct RequestPayload {
     pub params: HashMap<String, String>,
     /// Parsed query string parameters.
     pub query: HashMap<String, String>,
+    /// Arbitrary key-value pairs set by middleware and readable by handlers.
+    /// Commonly used to propagate authentication data (user ID, role, tenant, etc.).
+    pub extensions: HashMap<String, String>,
     pub(crate) body_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
 }
 

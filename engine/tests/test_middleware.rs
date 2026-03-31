@@ -132,3 +132,141 @@ async fn test_middleware_chain_order() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn test_middleware_sets_extension_readable_by_handler() {
+    let mut routes = RpressRoutes::new();
+
+    routes.use_middleware(|mut req, next| async move {
+        req.set_extension("user_id", "42");
+        req.set_extension("role", "admin");
+        next(req).await
+    });
+
+    routes.add(":get/me", |req: RequestPayload| async move {
+        let user_id = req.get_extension("user_id").unwrap_or("none");
+        let role = req.get_extension("role").unwrap_or("none");
+        ResponsePayload::text(format!("{}:{}", user_id, role))
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /me HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    .await;
+    let resp = parse_response(&raw);
+
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "42:admin");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_extension_missing_returns_none() {
+    let mut routes = RpressRoutes::new();
+
+    routes.add(":get/no-ext", |req: RequestPayload| async move {
+        let val = req.get_extension("missing").unwrap_or("absent");
+        ResponsePayload::text(val)
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /no-ext HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    .await;
+    let resp = parse_response(&raw);
+
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "absent");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_extension_overwritten_by_later_middleware() {
+    let mut routes = RpressRoutes::new();
+
+    routes.use_middleware(|mut req, next| async move {
+        req.set_extension("role", "user");
+        next(req).await
+    });
+
+    routes.use_middleware(|mut req, next| async move {
+        req.set_extension("role", "superadmin");
+        next(req).await
+    });
+
+    routes.add(":get/role", |req: RequestPayload| async move {
+        let role = req.get_extension("role").unwrap_or("none");
+        ResponsePayload::text(role)
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let raw = send_raw_request(
+        &addr,
+        "GET /role HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    .await;
+    let resp = parse_response(&raw);
+
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "superadmin");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_extension_auth_guard_pattern() {
+    let mut routes = RpressRoutes::new();
+
+    routes.use_middleware(|mut req, next| async move {
+        let token = req.header("authorization");
+
+        match token {
+            Some("Bearer valid-token") => {
+                req.set_extension("user_id", "99");
+                req.set_extension("tenant_id", "tenant-abc");
+                next(req).await
+            }
+            _ => Err(RpressError {
+                status: StatusCode::Unauthorized,
+                message: "invalid token".to_string(),
+            }),
+        }
+    });
+
+    routes.add(":get/protected", |req: RequestPayload| async move {
+        let user_id = req.get_extension("user_id").unwrap_or("?");
+        let tenant = req.get_extension("tenant_id").unwrap_or("?");
+        ResponsePayload::text(format!("user={} tenant={}", user_id, tenant))
+    });
+
+    let (addr, handle) = start_test_server(None, routes).await;
+
+    let raw_ok = send_raw_request(
+        &addr,
+        "GET /protected HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer valid-token\r\n\r\n",
+    )
+    .await;
+    let resp_ok = parse_response(&raw_ok);
+    assert_eq!(resp_ok.status_code, 200);
+    assert_eq!(resp_ok.body, "user=99 tenant=tenant-abc");
+
+    let raw_fail = send_raw_request(
+        &addr,
+        "GET /protected HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer bad\r\n\r\n",
+    )
+    .await;
+    let resp_fail = parse_response(&raw_fail);
+    assert_eq!(resp_fail.status_code, 401);
+    assert!(resp_fail.body.contains("invalid token"));
+
+    handle.abort();
+}
