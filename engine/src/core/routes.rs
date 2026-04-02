@@ -100,7 +100,16 @@ impl Route {
         if let Some(stripped) = current_segment.strip_prefix(':') {
             let param_name = stripped.to_string();
 
-            if self.dynamic_params.is_none() {
+            if let Some(ref existing) = self.dynamic_params {
+                if existing.name != param_name {
+                    panic!(
+                        "Conflicting dynamic parameter names at the same path level: \
+                         existing ':{}' vs new ':{}'. All routes sharing this prefix \
+                         must use the same parameter name.",
+                        existing.name, param_name,
+                    );
+                }
+            } else {
                 self.dynamic_params = Some(Box::new(DynamicParam {
                     name: param_name,
                     route: Route::new(),
